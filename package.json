@@ -1,0 +1,43 @@
+{
+  "name": "sih-jury-evaluation-platform",
+  "version": "1.0.0",
+  "description": "SIH Jury Evaluation & Management Platform",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"nodemon server/index.js\" \"vite\"",
+    "build": "vite build",
+    "preview": "vite preview",
+    "server": "nodemon server/index.js",
+    "migrate": "node server/db/migrate.js",
+    "seed": "node server/db/seed.js",
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "csv-parse": "^5.5.6",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "express-rate-limit": "^7.4.0",
+    "express-validator": "^7.2.0",
+    "fast-xml-parser": "^4.5.0",
+    "helmet": "^7.1.0",
+    "json2csv": "^6.0.0-alpha.2",
+    "multer": "^1.4.5-lts.1",
+    "pdf-parse": "^1.1.1",
+    "pg": "^8.13.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^9.0.0",
+    "nodemon": "^3.1.4",
+    "vite": "^5.4.0"
+  }
+}

@@ -1,0 +1,122 @@
+/* ============================================================
+   PAGE-SPECIFIC STYLES
+   ============================================================ */
+
+/* ---- DASHBOARD ---- */
+.dashboard-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-4); margin-bottom: var(--space-6); }
+.dashboard-progress { margin-bottom: var(--space-6); }
+.dashboard-grid { display: grid; grid-template-columns: 2fr 1fr; gap: var(--space-6); }
+.dashboard-section { margin-bottom: var(--space-6); }
+.dashboard-section-title {
+  font-size: var(--text-lg); font-weight: var(--font-semibold);
+  margin-bottom: var(--space-4); display: flex; align-items: center; gap: var(--space-2);
+}
+
+/* ---- TEAM CARD ---- */
+.team-card {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  transition: all var(--transition-normal);
+  cursor: pointer;
+}
+.team-card:hover { box-shadow: var(--shadow-md); border-color: var(--color-accent); }
+.team-card-code { font-size: var(--text-sm); font-weight: var(--font-bold); color: var(--color-accent); font-family: var(--font-mono); }
+.team-card-name { font-size: var(--text-md); font-weight: var(--font-semibold); margin-top: var(--space-1); }
+.team-card-info { font-size: var(--text-sm); color: var(--color-text-secondary); margin-top: var(--space-3); }
+.team-card-info p { margin-bottom: var(--space-1); }
+.team-card-footer { display: flex; justify-content: space-between; align-items: center; margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--color-border-light); }
+
+/* ---- EVALUATION PAGE ---- */
+.eval-header {
+  background: linear-gradient(135deg, var(--color-bg-primary), var(--color-bg-secondary));
+  color: var(--color-text-on-dark);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  margin-bottom: var(--space-6);
+}
+.eval-team-code { font-size: var(--text-sm); font-weight: var(--font-bold); color: var(--color-accent); font-family: var(--font-mono); letter-spacing: 0.05em; }
+.eval-team-name { font-size: var(--text-2xl); font-weight: var(--font-bold); margin-top: var(--space-2); }
+.eval-team-details { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-4); margin-top: var(--space-4); }
+.eval-detail-label { font-size: var(--text-xs); color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.eval-detail-value { font-size: var(--text-base); margin-top: var(--space-1); }
+
+.eval-total {
+  background: var(--color-accent-lighter);
+  border: 2px solid var(--color-accent-light);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  display: flex; justify-content: space-between; align-items: center;
+  margin: var(--space-6) 0;
+}
+.eval-total-label { font-size: var(--text-lg); font-weight: var(--font-semibold); color: var(--color-accent-active); }
+.eval-total-score { font-size: var(--text-3xl); font-weight: var(--font-bold); color: var(--color-accent-active); }
+
+/* ---- SEARCH TEAM ---- */
+.search-hero {
+  text-align: center;
+  padding: var(--space-12) var(--space-6);
+}
+.search-hero h2 { font-size: var(--text-2xl); margin-bottom: var(--space-2); }
+.search-hero p { color: var(--color-text-muted); margin-bottom: var(--space-6); }
+.search-input-wrapper {
+  display: flex; gap: var(--space-3); max-width: 500px; margin: 0 auto;
+}
+.search-input-wrapper .input { font-size: var(--text-lg); padding: var(--space-3) var(--space-4); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.1em; }
+
+/* ---- IMPORT CENTER ---- */
+.import-templates { display: flex; gap: var(--space-3); margin-top: var(--space-4); }
+.import-summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-3); margin: var(--space-4) 0; }
+.import-summary-item { text-align: center; padding: var(--space-3); border-radius: var(--radius-md); }
+.import-summary-count { font-size: var(--text-2xl); font-weight: var(--font-bold); }
+.import-summary-label { font-size: var(--text-xs); color: var(--color-text-muted); text-transform: uppercase; margin-top: var(--space-1); }
+
+/* ---- FIELD MAPPING ---- */
+.mapping-row {
+  display: flex; align-items: center; gap: var(--space-4);
+  padding: var(--space-3); border-bottom: 1px solid var(--color-border-light);
+}
+.mapping-arrow { color: var(--color-text-muted); font-size: var(--text-lg); }
+.mapping-source { flex: 1; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--color-text-secondary); }
+.mapping-target { flex: 1; }
+
+/* ---- SETTINGS ---- */
+.settings-section {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  margin-bottom: var(--space-4);
+}
+.settings-section-title { font-size: var(--text-lg); font-weight: var(--font-semibold); margin-bottom: var(--space-4); }
+
+/* ---- ACTIVITY FEED ---- */
+.activity-item {
+  display: flex; gap: var(--space-3); padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--color-border-light);
+}
+.activity-item:last-child { border-bottom: none; }
+.activity-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; }
+.activity-text { font-size: var(--text-sm); }
+.activity-time { font-size: var(--text-xs); color: var(--color-text-muted); margin-top: var(--space-1); }
+
+/* ---- SCORE STATS ---- */
+.stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-4); margin: var(--space-4) 0; }
+.stat-item { text-align: center; padding: var(--space-4); background: var(--color-bg-surface-alt); border-radius: var(--radius-md); }
+.stat-value { font-size: var(--text-xl); font-weight: var(--font-bold); }
+.stat-label { font-size: var(--text-xs); color: var(--color-text-muted); margin-top: var(--space-1); text-transform: uppercase; }
+
+@media (max-width: 1024px) {
+  .dashboard-kpis { grid-template-columns: repeat(2, 1fr); }
+  .dashboard-grid { grid-template-columns: 1fr; }
+  .eval-team-details { grid-template-columns: repeat(2, 1fr); }
+  .import-summary-grid { grid-template-columns: repeat(2, 1fr); }
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 768px) {
+  .dashboard-kpis { grid-template-columns: 1fr; }
+  .eval-team-details { grid-template-columns: 1fr; }
+  .search-input-wrapper { flex-direction: column; }
+}
