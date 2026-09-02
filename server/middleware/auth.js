@@ -28,10 +28,21 @@ export async function authenticate(req, res, next) {
     }
 
     // Look up user in our users table
-    const dbUser = await queryOne(
+    let dbUser = await queryOne(
       'SELECT id, auth_id, username, email, full_name, role, judge_id, status FROM users WHERE auth_id = $1',
       [authUser.id]
     );
+
+    if (!dbUser) {
+      dbUser = await queryOne(
+        'SELECT id, auth_id, username, email, full_name, role, judge_id, status FROM users WHERE email = $1 OR username = $1 OR email ILIKE $2 OR username ILIKE $2',
+        [authUser.email, `${authUser.email?.split('@')[0]}%`]
+      );
+      if (dbUser) {
+        await query('UPDATE users SET auth_id = $1 WHERE id = $2', [authUser.id, dbUser.id]);
+        dbUser.auth_id = authUser.id;
+      }
+    }
 
     if (!dbUser) {
       throw new UnauthorizedError('User account not found. Please contact admin.');

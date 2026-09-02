@@ -53,14 +53,20 @@ class ApiClient {
 
   async handleResponse(response) {
     // Handle CSV/file downloads
-    const contentType = response.headers.get('content-type');
+    const contentType = response.headers.get('content-type') || '';
     if (contentType && (contentType.includes('text/csv') || contentType.includes('application/xml'))) {
       if (!response.ok) throw new Error('Download failed');
       const blob = await response.blob();
       return { blob, filename: this.getFilename(response) };
     }
 
-    const data = await response.json();
+    let data;
+    const text = await response.text();
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { error: text || `HTTP ${response.status} Error`, code: 'SERVER_ERROR' };
+    }
 
     if (!response.ok) {
       const error = new Error(data.error || 'Request failed');

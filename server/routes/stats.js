@@ -44,30 +44,30 @@ router.get('/admin', authenticate, requireAdmin, async (req, res) => {
       queryAll('SELECT * FROM teams ORDER BY created_at DESC LIMIT 5'),
     ]);
 
-    const totalRequired = parseInt(totalEvaluations.count);
-    const totalSubmitted = parseInt(submittedEvaluations.count);
+    const totalRequired = parseInt(totalEvaluations?.count || 0);
+    const totalSubmitted = parseInt(submittedEvaluations?.count || 0);
     const completionPercent = totalRequired > 0 ? ((totalSubmitted / totalRequired) * 100).toFixed(1) : 0;
 
     res.json({
       kpi: {
-        totalTeams: parseInt(totalTeams.count),
-        totalJury: parseInt(totalJury.count),
-        totalUsers: parseInt(totalUsers.count),
+        totalTeams: parseInt(totalTeams?.count || 0),
+        totalJury: parseInt(totalJury?.count || 0),
+        totalUsers: parseInt(totalUsers?.count || 0),
         evaluationsRequired: totalRequired,
         evaluationsSubmitted: totalSubmitted,
         evaluationsPending: totalRequired - totalSubmitted,
         completionPercent: parseFloat(completionPercent),
-        averageScore: avgScore.avg ? parseFloat(parseFloat(avgScore.avg).toFixed(1)) : 0,
+        averageScore: avgScore?.avg ? parseFloat(parseFloat(avgScore.avg).toFixed(1)) : 0,
       },
-      recentActivity,
-      juryProgress: juryProgress.map(j => ({
+      recentActivity: recentActivity || [],
+      juryProgress: (juryProgress || []).map(j => ({
         ...j,
-        assigned: parseInt(j.assigned),
-        completed: parseInt(j.completed),
-        pending: parseInt(j.pending),
-        progress: j.assigned > 0 ? ((parseInt(j.completed) / parseInt(j.assigned)) * 100).toFixed(1) : 0,
+        assigned: parseInt(j.assigned || 0),
+        completed: parseInt(j.completed || 0),
+        pending: parseInt(j.pending || 0),
+        progress: parseInt(j.assigned || 0) > 0 ? ((parseInt(j.completed || 0) / parseInt(j.assigned || 1)) * 100).toFixed(1) : 0,
       })),
-      recentTeams,
+      recentTeams: recentTeams || [],
     });
   } catch (error) {
     console.error('Admin stats error:', error);

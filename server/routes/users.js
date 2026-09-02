@@ -128,14 +128,16 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
 
     // Create in our users table
     const user = await queryOne(
-      `INSERT INTO users (auth_id, username, email, full_name, role, judge_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO users (auth_id, username, email, password, full_name, role, judge_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id, username, email, full_name, role, judge_id, status, created_at`,
-      [authData.user.id, sanitize(username), email.toLowerCase(), sanitize(full_name), role, judge_id || null]
+      [authData.user.id, sanitize(username), email.toLowerCase(), password, sanitize(full_name), role, judge_id || null]
     );
 
-    await logAction(req.user.id, 'user.created', 'user', user.id,
-      { username: user.username, role: user.role }, getClientIp(req));
+    if (req.user?.id) {
+      await logAction(req.user.id, 'user.created', 'user', user.id,
+        { username: user.username, role: user.role }, getClientIp(req));
+    }
 
     res.status(201).json({ user });
   } catch (error) {
