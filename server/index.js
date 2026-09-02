@@ -149,11 +149,13 @@ app.use((err, req, res, next) => {
 // START SERVER
 // ============================================================
 
-app.listen(PORT, () => {
-  console.log(`\n🚀 SIH Jury Evaluation Platform API running on port ${PORT}`);
-  console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`   API: http://localhost:${PORT}/api`);
-  console.log(`   Health: http://localhost:${PORT}/api/health\n`);
-});
+if (process.env.VERCEL !== '1' && !process.env.VERCEL_ENV) {
+  app.listen(PORT, () => {
+    console.log(`\n🚀 SIH Jury Evaluation Platform API running on port ${PORT}`);
+    console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`   API: http://localhost:${PORT}/api`);
+    console.log(`   Health: http://localhost:${PORT}/api/health\n`);
+  });
+}
 
 export default app;

@@ -47,10 +47,27 @@ export function AuthProvider({ children }) {
     }
   };
 
-  const login = useCallback(async (email, password) => {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) throw error;
-    return data;
+  const login = useCallback(async (identifier, password) => {
+    let email = (identifier || '').trim();
+    if (!email.includes('@')) {
+      email = `${email}@sih.gov.in`;
+    } else if (!email.includes('.')) {
+      email = `${email}.gov.in`;
+    }
+
+    let authRes;
+    try {
+      authRes = await supabase.auth.signInWithPassword({ email, password });
+      if (authRes.error) throw authRes.error;
+    } catch (err) {
+      if (email !== identifier.trim()) {
+        authRes = await supabase.auth.signInWithPassword({ email: identifier.trim(), password });
+        if (authRes.error) throw authRes.error;
+      } else {
+        throw err;
+      }
+    }
+    return authRes.data;
   }, []);
 
   const logout = useCallback(async () => {

@@ -6,21 +6,31 @@ import supabaseAdmin from '../config/supabase.js';
  * Called after frontend login to ensure user exists in our DB
  */
 export async function syncUser(authId, email) {
-  // Check if user already exists
+  // 1. Check if user already exists by auth_id
   let user = await queryOne(
     'SELECT id, auth_id, username, email, full_name, role, judge_id, status, last_login_at FROM users WHERE auth_id = $1',
     [authId]
   );
 
   if (user) {
-    // Update last login
-    await query('UPDATE users SET last_login_at = NOW() WHERE auth_id = $1', [authId]);
+    await query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [user.id]);
     user.last_login_at = new Date().toISOString();
     return user;
   }
 
-  // User doesn't exist in our table yet — this shouldn't normally happen
-  // because users should be created by admin first. Return null.
+  // 2. Check if user exists by email or username (and link auth_id)
+  user = await queryOne(
+    'SELECT id, auth_id, username, email, full_name, role, judge_id, status, last_login_at FROM users WHERE email = $1 OR username = $1 OR email ILIKE $2',
+    [email, `${email.split('@')[0]}%`]
+  );
+
+  if (user) {
+    await query('UPDATE users SET auth_id = $1, last_login_at = NOW() WHERE id = $2', [authId, user.id]);
+    user.auth_id = authId;
+    user.last_login_at = new Date().toISOString();
+    return user;
+  }
+
   return null;
 }
 

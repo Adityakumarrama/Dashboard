@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS users (
     auth_id UUID UNIQUE,
     username CITEXT UNIQUE NOT NULL,
     email CITEXT UNIQUE NOT NULL,
+    password TEXT,
     full_name TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('ADMIN', 'JURY')),
     judge_id TEXT UNIQUE,

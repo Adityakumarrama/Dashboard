@@ -50,12 +50,12 @@ export default function Login() {
           )}
 
           <div className="form-group">
-            <label className="form-label" htmlFor="email">Email Address</label>
+            <label className="form-label" htmlFor="email">User ID / Email</label>
             <input
               id="email"
-              type="email"
+              type="text"
               className="input"
-              placeholder="you@example.com"
+              placeholder="e.g. SIHadmin6388@sih"
               value={email}
               onChange={e => setEmail(e.target.value)}
               required
