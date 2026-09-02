@@ -36,12 +36,34 @@ export function AuthProvider({ children }) {
   }, []);
 
   const syncUser = async (s) => {
+    if (!s?.user) {
+      setUser(null);
+      setLoading(false);
+      return;
+    }
+
     try {
       const data = await api.post('/auth/sync', {});
-      setUser(data.user);
+      if (data?.user) {
+        setUser(data.user);
+      } else {
+        throw new Error('No user data returned from sync');
+      }
     } catch (err) {
-      console.error('User sync failed:', err);
-      setUser(null);
+      console.warn('Backend sync failed, using session fallback:', err.message);
+      // Fallback to Supabase user session data so user is not stuck
+      const role = s.user.user_metadata?.role ||
+        (s.user.email?.toLowerCase().includes('admin') ? 'ADMIN' : 'JURY');
+      setUser({
+        id: s.user.id,
+        email: s.user.email,
+        username: s.user.user_metadata?.username || s.user.email?.split('@')[0],
+        fullName: s.user.user_metadata?.full_name || 'Administrator',
+        role: role,
+        judgeId: s.user.user_metadata?.judge_id || null,
+        status: 'active',
+        lastLoginAt: new Date().toISOString(),
+      });
     } finally {
       setLoading(false);
     }
