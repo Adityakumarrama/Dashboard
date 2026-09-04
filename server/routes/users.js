@@ -137,16 +137,42 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
     }
 
     // Create in our users table
-    const user = await queryOne(
-      `INSERT INTO users (auth_id, username, email, full_name, role, judge_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, username, email, full_name, role, judge_id, status, created_at`,
-      [authData.user.id, sanitize(username), email.toLowerCase(), sanitize(full_name), normalizedRole, judge_id || null]
-    );
+    let user = null;
+    try {
+      user = await queryOne(
+        `INSERT INTO users (auth_id, username, email, full_name, role, judge_id)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, username, email, full_name, role, judge_id, status, created_at`,
+        [authData.user.id, sanitize(username), email.toLowerCase(), sanitize(full_name), normalizedRole, judge_id || null]
+      );
+    } catch (dbInsertErr) {
+      console.warn('PostgreSQL insert error, trying Supabase REST client:', dbInsertErr.message);
+      const { data: supaInsert, error: supaErr } = await supabaseAdmin
+        .from('users')
+        .insert({
+          auth_id: authData.user.id,
+          username: sanitize(username),
+          email: email.toLowerCase(),
+          full_name: sanitize(full_name),
+          role: normalizedRole,
+          judge_id: judge_id || null,
+        })
+        .select('id, username, email, full_name, role, judge_id, status, created_at')
+        .single();
+
+      if (supaErr) {
+        throw new Error(`Database insert failed: ${supaErr.message}`);
+      }
+      user = supaInsert;
+    }
 
     if (req.user?.id) {
-      await logAction(req.user.id, 'user.created', 'user', user.id,
-        { username: user.username, role: user.role }, getClientIp(req));
+      try {
+        await logAction(req.user.id, 'user.created', 'user', user.id,
+          { username: user.username, role: user.role }, getClientIp(req));
+      } catch (logErr) {
+        console.warn('Audit log error:', logErr.message);
+      }
     }
 
     res.status(201).json({ user });
