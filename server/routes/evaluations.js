@@ -380,7 +380,23 @@ router.post('/', authenticate, requireAny, async (req, res) => {
       }
 
       if (!assignment) {
-        return res.status(403).json({ error: 'This team is not assigned to you', code: 'NOT_ASSIGNED' });
+        // Automatically assign team to this jury member on-demand
+        try {
+          try {
+            await query(
+              'INSERT INTO jury_assignments (user_id, team_id, assigned_by) VALUES ($1, $2, $1) ON CONFLICT (user_id, team_id) DO NOTHING',
+              [userId, team_id]
+            );
+          } catch {
+            await supabaseAdmin.from('jury_assignments').upsert({
+              user_id: userId,
+              team_id,
+              assigned_by: userId,
+            }, { onConflict: 'user_id,team_id' });
+          }
+        } catch (assignErr) {
+          console.warn('Auto-assign on evaluation create notice:', assignErr.message);
+        }
       }
     }
 

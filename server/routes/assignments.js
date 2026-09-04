@@ -256,6 +256,110 @@ router.post('/bulk', authenticate, requireAdmin, async (req, res) => {
 });
 
 /**
+ * POST /api/assignments/auto-assign
+ * Automatically distribute teams among active jury members depending on how many jury members exist
+ */
+router.post('/auto-assign', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { mode = 'round_robin', judges_per_team = 1, team_ids } = req.body;
+
+    // 1. Fetch all active jury members
+    let juries = [];
+    try {
+      juries = await queryAll("SELECT id, full_name, judge_id FROM users WHERE role = 'JURY' AND status = 'active' ORDER BY created_at");
+    } catch {
+      const { data } = await supabaseAdmin.from('users').select('id, full_name, judge_id').eq('role', 'JURY').eq('status', 'active').order('created_at');
+      juries = data || [];
+    }
+
+    if (!juries || juries.length === 0) {
+      return res.status(400).json({ error: 'No active jury members found to assign teams to', code: 'NO_JURIES' });
+    }
+
+    // 2. Fetch teams to assign
+    let teams = [];
+    try {
+      if (Array.isArray(team_ids) && team_ids.length > 0) {
+        teams = await queryAll('SELECT id, team_code FROM teams WHERE id = ANY($1) ORDER BY team_code', [team_ids]);
+      } else {
+        teams = await queryAll('SELECT id, team_code FROM teams ORDER BY team_code');
+      }
+    } catch {
+      let q = supabaseAdmin.from('teams').select('id, team_code').order('team_code');
+      if (Array.isArray(team_ids) && team_ids.length > 0) {
+        q = q.in('id', team_ids);
+      }
+      const { data } = await q;
+      teams = data || [];
+    }
+
+    if (!teams || teams.length === 0) {
+      return res.status(400).json({ error: 'No teams found to assign', code: 'NO_TEAMS' });
+    }
+
+    let created = 0;
+    const assignmentsToInsert = [];
+
+    if (mode === 'all') {
+      // Assign every team to every jury member
+      for (const team of teams) {
+        for (const jury of juries) {
+          assignmentsToInsert.push({ user_id: jury.id, team_id: team.id });
+        }
+      }
+    } else {
+      // Round-robin / balanced distribution depending on jury count
+      // If mode is round_robin and judges_per_team is 1:
+      // Each team goes to jury[i % juries.length]
+      const k = Math.min(Math.max(parseInt(judges_per_team) || 1, 1), juries.length);
+      for (let i = 0; i < teams.length; i++) {
+        const team = teams[i];
+        for (let j = 0; j < k; j++) {
+          const juryIndex = (i * k + j) % juries.length;
+          assignmentsToInsert.push({ user_id: juries[juryIndex].id, team_id: team.id });
+        }
+      }
+    }
+
+    for (const item of assignmentsToInsert) {
+      try {
+        try {
+          await query(
+            'INSERT INTO jury_assignments (user_id, team_id, assigned_by) VALUES ($1, $2, $3) ON CONFLICT (user_id, team_id) DO NOTHING',
+            [item.user_id, item.team_id, req.user.id]
+          );
+        } catch {
+          await supabaseAdmin
+            .from('jury_assignments')
+            .upsert({ user_id: item.user_id, team_id: item.team_id, assigned_by: req.user.id }, { onConflict: 'user_id,team_id' });
+        }
+        created++;
+      } catch (err) {
+        console.warn('Auto-assign insert notice:', err.message);
+      }
+    }
+
+    try {
+      await logAction(req.user.id, 'assignment.auto_assigned', 'assignment', null,
+        { total_teams: teams.length, total_juries: juries.length, created, mode },
+        getClientIp(req));
+    } catch (logErr) {
+      console.warn('Audit log error on auto-assign:', logErr.message);
+    }
+
+    res.status(201).json({
+      message: `Auto-assigned ${teams.length} teams across ${juries.length} jury members (${created} assignments generated).`,
+      total_teams: teams.length,
+      total_juries: juries.length,
+      created,
+    });
+  } catch (error) {
+    console.error('Auto assign error:', error);
+    res.status(500).json({ error: error.message || 'Failed to auto-assign teams', code: 'INTERNAL_ERROR' });
+  }
+});
+
+/**
  * DELETE /api/assignments/:id
  * Remove an assignment
  */

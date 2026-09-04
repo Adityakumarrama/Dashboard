@@ -10,6 +10,9 @@ export default function AdminAssignments() {
   const [selectedJury, setSelectedJury] = useState('');
   const [selectedTeams, setSelectedTeams] = useState([]);
   const [showBulk, setShowBulk] = useState(false);
+  const [showAutoModal, setShowAutoModal] = useState(false);
+  const [autoAssigning, setAutoAssigning] = useState(false);
+  const [autoMode, setAutoMode] = useState('round_robin');
   const [loading, setLoading] = useState(true);
   const toast = useToast();
 
@@ -41,6 +44,20 @@ export default function AdminAssignments() {
     } catch (err) { toast.error(err.message); }
   };
 
+  const handleAutoAssign = async () => {
+    setAutoAssigning(true);
+    try {
+      const data = await api.post('/assignments/auto-assign', { mode: autoMode });
+      toast.success(data.message || 'Auto-assignment completed successfully');
+      setShowAutoModal(false);
+      fetch();
+    } catch (err) {
+      toast.error(err.message || 'Auto-assignment failed');
+    } finally {
+      setAutoAssigning(false);
+    }
+  };
+
   const handleRemove = async (id) => {
     try {
       await api.delete(`/assignments/${id}`);
@@ -51,11 +68,24 @@ export default function AdminAssignments() {
 
   const toggleTeam = (id) => setSelectedTeams(prev => prev.includes(id) ? prev.filter(t => t !== id) : [...prev, id]);
 
+  const activeJuryCount = juryUsers.filter(u => u.role === 'JURY').length;
+  const teamsPerJury = activeJuryCount > 0 ? Math.ceil(teams.length / activeJuryCount) : 0;
+
   return (
     <div>
       <div className="page-header">
-        <div><h1 className="page-title">Assignments</h1><p className="page-subtitle">Manage jury-team assignments</p></div>
-        <button className="btn btn-primary" onClick={() => setShowBulk(true)}>+ Bulk Assign</button>
+        <div>
+          <h1 className="page-title">Assignments</h1>
+          <p className="page-subtitle">Manage and automatically distribute jury-team assignments</p>
+        </div>
+        <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+          <button className="btn btn-secondary" onClick={() => setShowAutoModal(true)}>
+            ⚡ Auto Assign Teams
+          </button>
+          <button className="btn btn-primary" onClick={() => setShowBulk(true)}>
+            + Bulk Assign
+          </button>
+        </div>
       </div>
 
       {/* Summary */}
@@ -134,6 +164,59 @@ export default function AdminAssignments() {
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={() => setShowBulk(false)}>Cancel</button>
               <button className="btn btn-primary" onClick={handleBulkAssign}>Assign {selectedTeams.length} Teams</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Auto Assign Modal */}
+      {showAutoModal && (
+        <div className="modal-overlay" onClick={() => setShowAutoModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="modal-title">⚡ Auto-Assign Teams</h3>
+              <button className="modal-close" onClick={() => setShowAutoModal(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <div style={{
+                background: 'var(--color-bg-secondary)',
+                border: '1px solid var(--color-border)',
+                borderRadius: 'var(--radius-md)',
+                padding: 'var(--space-4)',
+                marginBottom: 'var(--space-4)'
+              }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-2)', fontSize: 'var(--text-sm)' }}>
+                  <div><strong>Active Jury:</strong> {activeJuryCount} members</div>
+                  <div><strong>Total Teams:</strong> {teams.length} teams</div>
+                  <div><strong>Teams per Judge:</strong> ~{teamsPerJury} teams</div>
+                  <div><strong>Status:</strong> Balanced Distribution</div>
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Assignment Distribution Mode</label>
+                <select
+                  className="select"
+                  value={autoMode}
+                  onChange={e => setAutoMode(e.target.value)}
+                >
+                  <option value="round_robin">Round-Robin (Divide teams evenly among active juries)</option>
+                  <option value="all">Full Panel (Assign all teams to all active juries)</option>
+                </select>
+                <span className="form-hint" style={{ marginTop: 'var(--space-2)', display: 'block', fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>
+                  {autoMode === 'round_robin'
+                    ? `Teams will be distributed equally among the ${activeJuryCount} active jury members.`
+                    : `Every active jury member will be assigned all ${teams.length} teams.`}
+                </span>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setShowAutoModal(false)} disabled={autoAssigning}>
+                Cancel
+              </button>
+              <button className="btn btn-primary" onClick={handleAutoAssign} disabled={autoAssigning || activeJuryCount === 0 || teams.length === 0}>
+                {autoAssigning ? 'Assigning...' : 'Distribute Teams Automatically'}
+              </button>
             </div>
           </div>
         </div>

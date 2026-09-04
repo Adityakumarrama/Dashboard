@@ -105,7 +105,7 @@ router.get('/lookup/:teamCode', authenticate, requireAny, async (req, res) => {
       return res.status(404).json({ error: 'Team not found', code: 'TEAM_NOT_FOUND' });
     }
 
-    // If jury, check assignment
+    // If jury, ensure team is assigned (auto-assign on-demand if needed)
     if (req.user.role === 'JURY') {
       let assignment = null;
       try {
@@ -125,10 +125,23 @@ router.get('/lookup/:teamCode', authenticate, requireAny, async (req, res) => {
       }
 
       if (!assignment) {
-        return res.status(403).json({
-          error: 'This team is not assigned to you',
-          code: 'NOT_ASSIGNED',
-        });
+        // Automatically assign team to this jury member on-the-fly
+        try {
+          try {
+            await query(
+              'INSERT INTO jury_assignments (user_id, team_id, assigned_by) VALUES ($1, $2, $1) ON CONFLICT (user_id, team_id) DO NOTHING',
+              [req.user.id, team.id]
+            );
+          } catch {
+            await supabaseAdmin.from('jury_assignments').upsert({
+              user_id: req.user.id,
+              team_id: team.id,
+              assigned_by: req.user.id,
+            }, { onConflict: 'user_id,team_id' });
+          }
+        } catch (assignErr) {
+          console.warn('Auto-assign on lookup notice:', assignErr.message);
+        }
       }
     }
 
@@ -297,6 +310,35 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
       await logAction(req.user.id, 'team.created', 'team', team.id, { team_code: team.team_code }, getClientIp(req));
     } catch (logErr) {
       console.warn('Audit log error on team create:', logErr.message);
+    }
+
+    // Auto-assign new team to active juries based on jury count
+    try {
+      let activeJuries = [];
+      try {
+        activeJuries = await queryAll("SELECT id FROM users WHERE role = 'JURY' AND status = 'active' ORDER BY created_at");
+      } catch {
+        const { data } = await supabaseAdmin.from('users').select('id').eq('role', 'JURY').eq('status', 'active');
+        activeJuries = data || [];
+      }
+      if (activeJuries && activeJuries.length > 0) {
+        for (const j of activeJuries) {
+          try {
+            await query(
+              'INSERT INTO jury_assignments (user_id, team_id, assigned_by) VALUES ($1, $2, $3) ON CONFLICT (user_id, team_id) DO NOTHING',
+              [j.id, team.id, req.user.id]
+            );
+          } catch {
+            await supabaseAdmin.from('jury_assignments').upsert({
+              user_id: j.id,
+              team_id: team.id,
+              assigned_by: req.user.id,
+            }, { onConflict: 'user_id,team_id' });
+          }
+        }
+      }
+    } catch (autoErr) {
+      console.warn('Auto assign for new team notice:', autoErr.message);
     }
 
     res.status(201).json({ team });
