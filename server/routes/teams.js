@@ -187,31 +187,66 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Team code and name are required', code: 'VALIDATION_ERROR' });
     }
 
+    const cleanCode = sanitize(team_code);
+    const cleanName = sanitize(team_name);
+
     // Check for duplicate
-    const existing = await queryOne('SELECT id FROM teams WHERE team_code = $1', [team_code]);
+    let existing = null;
+    try {
+      existing = await queryOne('SELECT id FROM teams WHERE team_code = $1', [cleanCode]);
+    } catch {
+      const { data } = await supabaseAdmin.from('teams').select('id').eq('team_code', cleanCode).maybeSingle();
+      existing = data;
+    }
+
     if (existing) {
       return res.status(409).json({ error: 'Team code already exists', code: 'DUPLICATE_TEAM_CODE' });
     }
 
-    const team = await queryOne(
-      `INSERT INTO teams (team_code, team_name, problem_statement_id, problem_statement_title,
-        organization, category, track, team_leader, team_members, contact_info)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       RETURNING *`,
-      [
-        sanitize(team_code), sanitize(team_name), problem_statement_id || null,
-        problem_statement_title || null, organization || null, category || null,
-        track || null, team_leader || null,
-        team_members ? JSON.stringify(team_members) : '[]', contact_info || null,
-      ]
-    );
+    const teamPayload = {
+      team_code: cleanCode,
+      team_name: cleanName,
+      problem_statement_id: problem_statement_id || null,
+      problem_statement_title: problem_statement_title || null,
+      organization: organization || null,
+      category: category || null,
+      track: track || null,
+      team_leader: team_leader || null,
+      team_members: team_members || [],
+      contact_info: contact_info || null,
+    };
 
-    await logAction(req.user.id, 'team.created', 'team', team.id, { team_code: team.team_code }, getClientIp(req));
+    let team = null;
+    try {
+      team = await queryOne(
+        `INSERT INTO teams (team_code, team_name, problem_statement_id, problem_statement_title,
+          organization, category, track, team_leader, team_members, contact_info)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING *`,
+        [
+          cleanCode, cleanName, teamPayload.problem_statement_id,
+          teamPayload.problem_statement_title, teamPayload.organization, teamPayload.category,
+          teamPayload.track, teamPayload.team_leader,
+          JSON.stringify(teamPayload.team_members), teamPayload.contact_info,
+        ]
+      );
+    } catch (pgErr) {
+      console.warn('Postgres insert failed in POST /api/teams, falling back to Supabase REST client:', pgErr.message);
+      const { data, error: supaErr } = await supabaseAdmin.from('teams').insert(teamPayload).select().single();
+      if (supaErr) throw supaErr;
+      team = data;
+    }
+
+    try {
+      await logAction(req.user.id, 'team.created', 'team', team.id, { team_code: team.team_code }, getClientIp(req));
+    } catch (logErr) {
+      console.warn('Audit log error on team create:', logErr.message);
+    }
 
     res.status(201).json({ team });
   } catch (error) {
     console.error('Create team error:', error);
-    res.status(500).json({ error: 'Failed to create team', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to create team', code: 'INTERNAL_ERROR' });
   }
 });
 
@@ -221,7 +256,14 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
  */
 router.put('/:id', authenticate, requireAdmin, async (req, res) => {
   try {
-    const existing = await queryOne('SELECT * FROM teams WHERE id = $1', [req.params.id]);
+    let existing = null;
+    try {
+      existing = await queryOne('SELECT * FROM teams WHERE id = $1', [req.params.id]);
+    } catch {
+      const { data } = await supabaseAdmin.from('teams').select('*').eq('id', req.params.id).maybeSingle();
+      existing = data;
+    }
+
     if (!existing) {
       return res.status(404).json({ error: 'Team not found', code: 'NOT_FOUND' });
     }
@@ -234,66 +276,126 @@ router.put('/:id', authenticate, requireAdmin, async (req, res) => {
 
     // Check for duplicate code if changed
     if (team_code && team_code !== existing.team_code) {
-      const dup = await queryOne('SELECT id FROM teams WHERE team_code = $1 AND id != $2', [team_code, req.params.id]);
+      let dup = null;
+      try {
+        dup = await queryOne('SELECT id FROM teams WHERE team_code = $1 AND id != $2', [team_code, req.params.id]);
+      } catch {
+        const { data } = await supabaseAdmin.from('teams').select('id').eq('team_code', team_code).neq('id', req.params.id).maybeSingle();
+        dup = data;
+      }
       if (dup) {
         return res.status(409).json({ error: 'Team code already exists', code: 'DUPLICATE_TEAM_CODE' });
       }
     }
 
-    const team = await queryOne(
-      `UPDATE teams SET
-        team_code = COALESCE($1, team_code),
-        team_name = COALESCE($2, team_name),
-        problem_statement_id = COALESCE($3, problem_statement_id),
-        problem_statement_title = COALESCE($4, problem_statement_title),
-        organization = COALESCE($5, organization),
-        category = COALESCE($6, category),
-        track = COALESCE($7, track),
-        team_leader = COALESCE($8, team_leader),
-        team_members = COALESCE($9, team_members),
-        contact_info = COALESCE($10, contact_info),
-        presentation_status = COALESCE($11, presentation_status),
-        demo_status = COALESCE($12, demo_status),
-        registration_status = COALESCE($13, registration_status)
-       WHERE id = $14
-       RETURNING *`,
-      [
-        team_code, team_name, problem_statement_id, problem_statement_title,
-        organization, category, track, team_leader,
-        team_members ? JSON.stringify(team_members) : null, contact_info,
-        presentation_status, demo_status, registration_status, req.params.id,
-      ]
-    );
+    let team = null;
+    try {
+      team = await queryOne(
+        `UPDATE teams SET
+          team_code = COALESCE($1, team_code),
+          team_name = COALESCE($2, team_name),
+          problem_statement_id = COALESCE($3, problem_statement_id),
+          problem_statement_title = COALESCE($4, problem_statement_title),
+          organization = COALESCE($5, organization),
+          category = COALESCE($6, category),
+          track = COALESCE($7, track),
+          team_leader = COALESCE($8, team_leader),
+          team_members = COALESCE($9, team_members),
+          contact_info = COALESCE($10, contact_info),
+          presentation_status = COALESCE($11, presentation_status),
+          demo_status = COALESCE($12, demo_status),
+          registration_status = COALESCE($13, registration_status)
+         WHERE id = $14
+         RETURNING *`,
+        [
+          team_code, team_name, problem_statement_id, problem_statement_title,
+          organization, category, track, team_leader,
+          team_members ? JSON.stringify(team_members) : null, contact_info,
+          presentation_status, demo_status, registration_status, req.params.id,
+        ]
+      );
+    } catch (pgErr) {
+      console.warn('Postgres update failed in PUT /api/teams/:id, falling back to Supabase REST client:', pgErr.message);
+      const updateData = {};
+      if (team_code !== undefined) updateData.team_code = team_code;
+      if (team_name !== undefined) updateData.team_name = team_name;
+      if (problem_statement_id !== undefined) updateData.problem_statement_id = problem_statement_id;
+      if (problem_statement_title !== undefined) updateData.problem_statement_title = problem_statement_title;
+      if (organization !== undefined) updateData.organization = organization;
+      if (category !== undefined) updateData.category = category;
+      if (track !== undefined) updateData.track = track;
+      if (team_leader !== undefined) updateData.team_leader = team_leader;
+      if (team_members !== undefined) updateData.team_members = team_members;
+      if (contact_info !== undefined) updateData.contact_info = contact_info;
+      if (presentation_status !== undefined) updateData.presentation_status = presentation_status;
+      if (demo_status !== undefined) updateData.demo_status = demo_status;
+      if (registration_status !== undefined) updateData.registration_status = registration_status;
 
-    await logAction(req.user.id, 'team.updated', 'team', team.id,
-      { before: existing, after: team }, getClientIp(req));
+      const { data, error: supaErr } = await supabaseAdmin.from('teams').update(updateData).eq('id', req.params.id).select().single();
+      if (supaErr) throw supaErr;
+      team = data;
+    }
+
+    try {
+      await logAction(req.user.id, 'team.updated', 'team', team.id,
+        { before: existing, after: team }, getClientIp(req));
+    } catch (logErr) {
+      console.warn('Audit log error on team update:', logErr.message);
+    }
 
     res.json({ team });
   } catch (error) {
     console.error('Update team error:', error);
-    res.status(500).json({ error: 'Failed to update team', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to update team', code: 'INTERNAL_ERROR' });
   }
 });
 
 /**
  * DELETE /api/teams/:id
+ * Permanently delete team and explicitly cascade all assignments, scores, and evaluations
  */
 router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
   try {
-    const team = await queryOne('SELECT * FROM teams WHERE id = $1', [req.params.id]);
+    let team = null;
+    try {
+      team = await queryOne('SELECT * FROM teams WHERE id = $1', [req.params.id]);
+    } catch {
+      const { data } = await supabaseAdmin.from('teams').select('*').eq('id', req.params.id).maybeSingle();
+      team = data;
+    }
+
     if (!team) {
       return res.status(404).json({ error: 'Team not found', code: 'NOT_FOUND' });
     }
 
-    await query('DELETE FROM teams WHERE id = $1', [req.params.id]);
+    // Explicitly cascade delete from dependent tables to guarantee safe deletion
+    try {
+      await query('DELETE FROM evaluation_scores WHERE team_id = $1', [req.params.id]);
+      await query('DELETE FROM evaluation_score_history WHERE team_id = $1', [req.params.id]);
+      await query('DELETE FROM evaluations WHERE team_id = $1', [req.params.id]);
+      await query('DELETE FROM jury_assignments WHERE team_id = $1', [req.params.id]);
+      await query('DELETE FROM teams WHERE id = $1', [req.params.id]);
+    } catch (pgErr) {
+      console.warn('Postgres delete failed in DELETE /api/teams/:id, falling back to Supabase REST client:', pgErr.message);
+      await supabaseAdmin.from('evaluation_scores').delete().eq('team_id', req.params.id);
+      await supabaseAdmin.from('evaluation_score_history').delete().eq('team_id', req.params.id);
+      await supabaseAdmin.from('evaluations').delete().eq('team_id', req.params.id);
+      await supabaseAdmin.from('jury_assignments').delete().eq('team_id', req.params.id);
+      const { error: supaErr } = await supabaseAdmin.from('teams').delete().eq('id', req.params.id);
+      if (supaErr) throw new Error(supaErr.message);
+    }
 
-    await logAction(req.user.id, 'team.deleted', 'team', req.params.id,
-      { team_code: team.team_code, team_name: team.team_name }, getClientIp(req));
+    try {
+      await logAction(req.user.id, 'team.deleted', 'team', req.params.id,
+        { team_code: team.team_code, team_name: team.team_name }, getClientIp(req));
+    } catch (logErr) {
+      console.warn('Audit log error on team delete:', logErr.message);
+    }
 
     res.json({ message: 'Team deleted successfully' });
   } catch (error) {
     console.error('Delete team error:', error);
-    res.status(500).json({ error: 'Failed to delete team', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to delete team', code: 'INTERNAL_ERROR' });
   }
 });
 

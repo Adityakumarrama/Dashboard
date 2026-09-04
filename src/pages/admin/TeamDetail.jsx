@@ -1,10 +1,13 @@
 import { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import api from '../../lib/api';
+import { useToast } from '../../context/ToastContext';
 import { formatDateTime, formatScore } from '../../lib/utils';
 
 export default function TeamDetail() {
   const { teamId } = useParams();
+  const navigate = useNavigate();
+  const toast = useToast();
   const [team, setTeam] = useState(null);
   const [evaluations, setEvaluations] = useState([]);
   const [stats, setStats] = useState(null);
@@ -19,6 +22,17 @@ export default function TeamDetail() {
     }).catch(() => setLoading(false));
   }, [teamId]);
 
+  const handleDelete = async () => {
+    if (!confirm(`Permanently delete team ${team.team_code} (${team.team_name})?\n\nThis action cannot be undone and will delete all associated evaluations.`)) return;
+    try {
+      await api.delete(`/teams/${team.id}`);
+      toast.success(`Team ${team.team_code} deleted successfully`);
+      navigate('/admin/teams');
+    } catch (err) {
+      toast.error(err.message || 'Failed to delete team');
+    }
+  };
+
   if (loading) return <div className="skeleton skeleton-card" style={{ height: 300 }} />;
   if (!team) return <div className="empty-state"><div className="empty-state-title">Team not found</div></div>;
 
@@ -31,8 +45,19 @@ export default function TeamDetail() {
       </div>
 
       <div className="eval-header">
-        <div className="eval-team-code">{team.team_code}</div>
-        <div className="eval-team-name">{team.team_name}</div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <div className="eval-team-code">{team.team_code}</div>
+            <div className="eval-team-name">{team.team_name}</div>
+          </div>
+          <button
+            className="btn btn-ghost btn-sm"
+            style={{ color: 'var(--color-error)' }}
+            onClick={handleDelete}
+          >
+            🗑️ Delete Team
+          </button>
+        </div>
         <div className="eval-team-details">
           <div><div className="eval-detail-label">Problem Statement</div><div className="eval-detail-value">{team.problem_statement_title || '—'}</div></div>
           <div><div className="eval-detail-label">Organization</div><div className="eval-detail-value">{team.organization || '—'}</div></div>
