@@ -292,7 +292,7 @@ router.put('/:id', authenticate, requireAdmin, async (req, res) => {
 
 /**
  * DELETE /api/users/:id
- * Soft-delete (deactivate) user
+ * Permanently delete user from DB and Supabase Auth
  */
 router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
   try {
@@ -313,57 +313,44 @@ router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Cannot delete your own account', code: 'SELF_DELETE' });
     }
 
-    // Get stats for confirmation
-    let evalCount = { count: 0 };
-    let pendingCount = { count: 0 };
-    try {
-      evalCount = await queryOne(
-        'SELECT COUNT(*) as count FROM evaluations WHERE user_id = $1 AND status = \'submitted\'',
-        [req.params.id]
-      ) || { count: 0 };
-      pendingCount = await queryOne(
-        'SELECT COUNT(*) as count FROM jury_assignments WHERE user_id = $1',
-        [req.params.id]
-      ) || { count: 0 };
-    } catch {
-      // Stats not critical, continue with defaults
+    // Prevent deleting admin accounts
+    if (user.role === 'ADMIN') {
+      return res.status(400).json({ error: 'Cannot delete admin accounts', code: 'ADMIN_DELETE' });
     }
 
-    // Soft delete - deactivate user
+    // Remove jury assignments for this user
     try {
-      await query('UPDATE users SET status = \'inactive\' WHERE id = $1', [req.params.id]);
+      await query('DELETE FROM jury_assignments WHERE user_id = $1', [req.params.id]);
     } catch {
-      const { error: supaErr } = await supabaseAdmin
-        .from('users')
-        .update({ status: 'inactive' })
-        .eq('id', req.params.id);
+      await supabaseAdmin.from('jury_assignments').delete().eq('user_id', req.params.id);
+    }
+
+    // Permanently delete from users table
+    try {
+      await query('DELETE FROM users WHERE id = $1', [req.params.id]);
+    } catch {
+      const { error: supaErr } = await supabaseAdmin.from('users').delete().eq('id', req.params.id);
       if (supaErr) throw new Error(supaErr.message);
     }
 
-    // Disable in Supabase Auth if they have auth_id
+    // Delete from Supabase Auth
     if (user.auth_id) {
       try {
-        await supabaseAdmin.auth.admin.updateUserById(user.auth_id, { ban_duration: 'none' });
+        await supabaseAdmin.auth.admin.deleteUser(user.auth_id);
       } catch (e) {
-        console.error('Failed to disable Supabase auth user:', e.message);
+        console.warn('Failed to delete Supabase auth user:', e.message);
       }
     }
 
     try {
       await logAction(req.user.id, 'user.deleted', 'user', req.params.id,
-        { username: user.username, submitted_evaluations: evalCount.count, assignments: pendingCount.count },
+        { username: user.username, full_name: user.full_name, judge_id: user.judge_id },
         getClientIp(req));
     } catch (logErr) {
       console.warn('Audit log error:', logErr.message);
     }
 
-    res.json({
-      message: 'User deactivated successfully',
-      stats: {
-        submittedEvaluations: parseInt(evalCount.count || 0),
-        assignments: parseInt(pendingCount.count || 0),
-      },
-    });
+    res.json({ message: 'User deleted permanently' });
   } catch (error) {
     console.error('Delete user error:', error);
     res.status(500).json({ error: error.message || 'Failed to delete user', code: 'INTERNAL_ERROR' });

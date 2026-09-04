@@ -51,20 +51,11 @@ export default function AdminUsers() {
     } catch (err) { toast.error(err.message); }
   };
 
-  const handleToggleStatus = async (user) => {
-    const newStatus = user.status === 'active' ? 'inactive' : 'active';
-    try {
-      await api.put(`/users/${user.id}`, { status: newStatus });
-      toast.success(`User ${newStatus === 'active' ? 'activated' : 'deactivated'}`);
-      fetchUsers();
-    } catch (err) { toast.error(err.message); }
-  };
-
   const handleDelete = async (user) => {
-    if (!confirm(`Delete ${user.full_name}?\n\nThis user has ${user.evaluations_completed || 0} submitted evaluations.\nHistorical evaluations will be preserved.`)) return;
+    if (!confirm(`Permanently delete ${user.full_name}?\n\nThis action cannot be undone.\nAll evaluations by this user will be preserved.`)) return;
     try {
       await api.delete(`/users/${user.id}`);
-      toast.success('User deactivated');
+      toast.success('User deleted permanently');
       fetchUsers();
     } catch (err) { toast.error(err.message); }
   };
@@ -94,25 +85,23 @@ export default function AdminUsers() {
       <div className="table-container">
         <table className="table">
           <thead>
-            <tr><th>Name</th><th>Jury ID</th><th>Role</th><th>Status</th><th>Assigned</th><th>Completed</th><th>Last Login</th><th>Actions</th></tr>
+            <tr><th>Name</th><th>Jury ID</th><th>Role</th><th>Assigned</th><th>Completed</th><th>Last Login</th><th>Actions</th></tr>
           </thead>
           <tbody>
-            {loading ? [...Array(3)].map((_, i) => <tr key={i}><td colSpan="8"><div className="skeleton skeleton-text" /></td></tr>) :
-            users.length === 0 ? <tr><td colSpan="8" className="empty-state"><div className="empty-state-title">No users found</div></td></tr> :
+            {loading ? [...Array(3)].map((_, i) => <tr key={i}><td colSpan="7"><div className="skeleton skeleton-text" /></td></tr>) :
+            users.length === 0 ? <tr><td colSpan="7" className="empty-state"><div className="empty-state-title">No users found</div></td></tr> :
             users.map(user => (
               <tr key={user.id}>
                 <td><strong>{user.full_name}</strong></td>
                 <td style={{ fontSize: 'var(--text-sm)', fontFamily: 'monospace' }}>{user.judge_id || user.username || '—'}</td>
                 <td><span className={`badge ${user.role === 'ADMIN' ? 'badge-accent' : 'badge-info'}`}>{user.role}</span></td>
-                <td><span className={`badge ${getStatusClass(user.status)}`}>{user.status}</span></td>
                 <td>{user.assigned_teams || 0}</td>
                 <td>{user.evaluations_completed || 0}</td>
                 <td style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-muted)' }}>{formatDateTime(user.last_login_at)}</td>
                 <td>
-                  <div style={{ display: 'flex', gap: 'var(--space-1)' }}>
-                    <button className="btn btn-ghost btn-sm" onClick={() => handleToggleStatus(user)}>{user.status === 'active' ? 'Deactivate' : 'Activate'}</button>
+                  {user.role !== 'ADMIN' && (
                     <button className="btn btn-ghost btn-sm" style={{ color: 'var(--color-error)' }} onClick={() => handleDelete(user)}>Delete</button>
-                  </div>
+                  )}
                 </td>
               </tr>
             ))}
