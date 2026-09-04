@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import api from '../../lib/api';
 import { useToast } from '../../context/ToastContext';
-import { formatDateTime, formatScore } from '../../lib/utils';
+import { formatDateTime } from '../../lib/utils';
 
 export default function TeamDetail() {
   const { teamId } = useParams();
@@ -36,6 +36,8 @@ export default function TeamDetail() {
   if (loading) return <div className="skeleton skeleton-card" style={{ height: 300 }} />;
   if (!team) return <div className="empty-state"><div className="empty-state-title">Team not found</div></div>;
 
+  const members = Array.isArray(team.team_members) ? team.team_members : [];
+
   return (
     <div>
       <div className="breadcrumbs" style={{ marginBottom: 'var(--space-4)' }}>
@@ -59,9 +61,25 @@ export default function TeamDetail() {
           </button>
         </div>
         <div className="eval-team-details">
-          <div><div className="eval-detail-label">Problem Statement</div><div className="eval-detail-value">{team.problem_statement_title || '—'}</div></div>
-          <div><div className="eval-detail-label">Organization</div><div className="eval-detail-value">{team.organization || '—'}</div></div>
-          <div><div className="eval-detail-label">Category / Track</div><div className="eval-detail-value">{team.category || '—'} / {team.track || '—'}</div></div>
+          <div>
+            <div className="eval-detail-label">Problem Statement</div>
+            <div className="eval-detail-value">
+              {team.problem_statement_id && <span className="tag" style={{ marginRight: 6 }}>{team.problem_statement_id}</span>}
+              {team.problem_statement_title || '—'}
+            </div>
+          </div>
+          <div>
+            <div className="eval-detail-label">Department & Course</div>
+            <div className="eval-detail-value">
+              {team.department || team.track || '—'} {team.course ? `(${team.course})` : ''}
+            </div>
+          </div>
+          <div>
+            <div className="eval-detail-label">Submitter Email</div>
+            <div className="eval-detail-value" style={{ wordBreak: 'break-all' }}>
+              {team.submitter_email || '—'}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -71,6 +89,91 @@ export default function TeamDetail() {
         <div className="stat-item"><div className="stat-value">{stats?.highestScore ?? '—'}</div><div className="stat-label">Highest Score</div></div>
         <div className="stat-item"><div className="stat-value">{stats?.lowestScore ?? '—'}</div><div className="stat-label">Lowest Score</div></div>
         <div className="stat-item"><div className="stat-value">{stats?.completedJudges ?? 0} / {evaluations.length}</div><div className="stat-label">Judges Completed</div></div>
+      </div>
+
+      {/* Team Leader Details */}
+      <div className="card" style={{ marginTop: 'var(--space-6)' }}>
+        <h3 style={{ marginBottom: 'var(--space-4)', display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+          <span>👑</span> Team Leader
+        </h3>
+        <div className="leader-card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
+            <div>
+              <div style={{ fontSize: 'var(--text-lg)', fontWeight: 'var(--font-bold)', color: 'var(--color-text-primary)' }}>
+                {team.team_leader || 'Not Specified'}
+              </div>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', marginTop: 2 }}>
+                Team Leader & Point of Contact
+              </div>
+            </div>
+            {team.leader_enrollment && (
+              <span className="tag" style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                Enrollment: {team.leader_enrollment}
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 'var(--space-3)', marginTop: 'var(--space-4)' }}>
+            <div>
+              <span className="roster-card-meta-label">Rama Official Email: </span>
+              <strong style={{ display: 'block', wordBreak: 'break-all' }}>{team.leader_email || '—'}</strong>
+            </div>
+            <div>
+              <span className="roster-card-meta-label">Contact Phone: </span>
+              <strong style={{ display: 'block' }}>{team.leader_phone || '—'}</strong>
+            </div>
+            <div>
+              <span className="roster-card-meta-label">Department / Course: </span>
+              <strong style={{ display: 'block' }}>{team.department || '—'} {team.course ? `(${team.course})` : ''}</strong>
+            </div>
+          </div>
+        </div>
+
+        {/* Student Roster (5 Team Members) */}
+        <h4 style={{ marginTop: 'var(--space-6)', marginBottom: 'var(--space-3)', display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+          <span>👥</span> Team Members Roster ({members.length})
+        </h4>
+        {members.length === 0 ? (
+          <div style={{ padding: 'var(--space-4)', textAlign: 'center', color: 'var(--color-text-muted)', background: 'var(--color-bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+            No team members registered yet.
+          </div>
+        ) : (
+          <div className="roster-grid">
+            {members.map((m, idx) => {
+              const isGirl = !!m.is_girl_member || m.member_number === 1;
+              return (
+                <div key={idx} className={`roster-card ${isGirl ? 'girl-member' : ''}`}>
+                  <div className="roster-card-header">
+                    <span className="roster-card-title">Member {m.member_number || idx + 1}</span>
+                    {isGirl ? (
+                      <span className="badge-girl">👩 Member 1 - Girl</span>
+                    ) : (
+                      <span className="tag">{m.gender || 'Member'}</span>
+                    )}
+                  </div>
+                  <div className="roster-card-name">{m.name || '—'}</div>
+                  <div className="roster-card-meta">
+                    <div className="roster-card-meta-item">
+                      <span className="roster-card-meta-label">Enrollment:</span>
+                      <strong style={{ fontFamily: 'var(--font-mono)' }}>{m.enrollment_number || '—'}</strong>
+                    </div>
+                    <div className="roster-card-meta-item">
+                      <span className="roster-card-meta-label">Department:</span>
+                      <span>{m.department || '—'}</span>
+                    </div>
+                    <div className="roster-card-meta-item">
+                      <span className="roster-card-meta-label">Gender:</span>
+                      <span>{m.gender || '—'}</span>
+                    </div>
+                    <div style={{ marginTop: 'var(--space-2)', paddingTop: 'var(--space-2)', borderTop: '1px solid var(--color-border-light)' }}>
+                      <span className="roster-card-meta-label">Rama Email:</span>
+                      <div style={{ wordBreak: 'break-all', fontSize: 'var(--text-xs)', marginTop: 2 }}>{m.email || '—'}</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Evaluations Table */}

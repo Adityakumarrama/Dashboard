@@ -40,9 +40,34 @@ CREATE TABLE IF NOT EXISTS teams (
     presentation_status TEXT DEFAULT 'pending' CHECK (presentation_status IN ('pending', 'completed', 'skipped')),
     demo_status TEXT DEFAULT 'pending' CHECK (demo_status IN ('pending', 'completed', 'skipped')),
     registration_status TEXT DEFAULT 'registered' CHECK (registration_status IN ('registered', 'confirmed', 'withdrawn')),
+    department TEXT,
+    course TEXT,
+    leader_phone TEXT,
+    leader_email TEXT,
+    leader_enrollment TEXT,
+    submitter_email TEXT,
+    raw_data JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ============================================================
+-- TEAM MEMBERS (Relational storage for team members)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS team_members (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    member_number INTEGER,
+    name TEXT NOT NULL,
+    email TEXT,
+    enrollment_number TEXT,
+    gender TEXT,
+    department TEXT,
+    is_girl_member BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_members_team_id ON team_members(team_id);
 
 -- ============================================================
 -- JURY ASSIGNMENTS

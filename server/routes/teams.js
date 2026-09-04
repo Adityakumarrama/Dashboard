@@ -84,6 +84,28 @@ router.get('/', authenticate, requireAny, async (req, res) => {
   }
 });
 
+async function getTeamMembersList(teamId, fallbackJson) {
+  let members = [];
+  try {
+    members = await queryAll('SELECT * FROM team_members WHERE team_id = $1 ORDER BY member_number ASC', [teamId]);
+  } catch {
+    try {
+      const { data } = await supabaseAdmin.from('team_members').select('*').eq('team_id', teamId).order('member_number', { ascending: true });
+      members = data || [];
+    } catch {}
+  }
+  if (members && members.length > 0) {
+    return members;
+  }
+  if (fallbackJson) {
+    if (typeof fallbackJson === 'string') {
+      try { return JSON.parse(fallbackJson); } catch { return []; }
+    }
+    if (Array.isArray(fallbackJson)) return fallbackJson;
+  }
+  return [];
+}
+
 /**
  * GET /api/teams/lookup/:teamCode
  * Fast team code lookup for jury search
@@ -104,6 +126,9 @@ router.get('/lookup/:teamCode', authenticate, requireAny, async (req, res) => {
     if (!team) {
       return res.status(404).json({ error: 'Team not found', code: 'TEAM_NOT_FOUND' });
     }
+
+    // Attach team members list
+    team.team_members = await getTeamMembersList(team.id, team.team_members);
 
     // If jury, ensure team is assigned (auto-assign on-demand if needed)
     if (req.user.role === 'JURY') {
@@ -170,6 +195,9 @@ router.get('/:id', authenticate, requireAny, async (req, res) => {
     if (!team) {
       return res.status(404).json({ error: 'Team not found', code: 'NOT_FOUND' });
     }
+
+    // Attach full team members list
+    team.team_members = await getTeamMembersList(team.id, team.team_members);
 
     // Get evaluations for this team
     let evaluations = [];
@@ -273,6 +301,7 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
     const {
       team_code, team_name, problem_statement_id, problem_statement_title,
       organization, category, track, team_leader, team_members, contact_info,
+      department, course, leader_phone, leader_email, leader_enrollment, submitter_email,
     } = req.body;
 
     if (!team_code || !team_name) {
@@ -300,26 +329,37 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
       team_name: cleanName,
       problem_statement_id: problem_statement_id || null,
       problem_statement_title: problem_statement_title || null,
-      organization: organization || null,
-      category: category || null,
-      track: track || null,
+      organization: organization || 'Rama University (F.E.T)',
+      category: category || 'Software',
+      track: track || department || 'Technology',
       team_leader: team_leader || null,
-      team_members: team_members || [],
-      contact_info: contact_info || null,
+      team_members: Array.isArray(team_members) ? team_members : [],
+      contact_info: contact_info || (leader_email ? `${team_leader} | ${leader_email} | ${leader_phone || ''}` : null),
+      department: department || null,
+      course: course || null,
+      leader_phone: leader_phone || null,
+      leader_email: leader_email || null,
+      leader_enrollment: leader_enrollment || null,
+      submitter_email: submitter_email || null,
     };
 
     let team = null;
     try {
       team = await queryOne(
-        `INSERT INTO teams (team_code, team_name, problem_statement_id, problem_statement_title,
-          organization, category, track, team_leader, team_members, contact_info)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        `INSERT INTO teams (
+          team_code, team_name, problem_statement_id, problem_statement_title,
+          organization, category, track, team_leader, team_members, contact_info,
+          department, course, leader_phone, leader_email, leader_enrollment, submitter_email
+        )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
          RETURNING *`,
         [
           cleanCode, cleanName, teamPayload.problem_statement_id,
           teamPayload.problem_statement_title, teamPayload.organization, teamPayload.category,
           teamPayload.track, teamPayload.team_leader,
           JSON.stringify(teamPayload.team_members), teamPayload.contact_info,
+          teamPayload.department, teamPayload.course, teamPayload.leader_phone,
+          teamPayload.leader_email, teamPayload.leader_enrollment, teamPayload.submitter_email,
         ]
       );
     } catch (pgErr) {
@@ -327,6 +367,33 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
       const { data, error: supaErr } = await supabaseAdmin.from('teams').insert(teamPayload).select().single();
       if (supaErr) throw supaErr;
       team = data;
+    }
+
+    // Sync team_members table
+    if (team?.id && Array.isArray(teamPayload.team_members) && teamPayload.team_members.length > 0) {
+      try {
+        await query('DELETE FROM team_members WHERE team_id = $1', [team.id]);
+        for (const m of teamPayload.team_members) {
+          await query(
+            `INSERT INTO team_members (team_id, member_number, name, email, enrollment_number, gender, department, is_girl_member)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [team.id, m.member_number, m.name, m.email || null, m.enrollment_number || null, m.gender || null, m.department || null, !!m.is_girl_member]
+          );
+        }
+      } catch {
+        await supabaseAdmin.from('team_members').delete().eq('team_id', team.id);
+        const memberRows = teamPayload.team_members.map(m => ({
+          team_id: team.id,
+          member_number: m.member_number,
+          name: m.name,
+          email: m.email || null,
+          enrollment_number: m.enrollment_number || null,
+          gender: m.gender || null,
+          department: m.department || null,
+          is_girl_member: !!m.is_girl_member,
+        }));
+        await supabaseAdmin.from('team_members').insert(memberRows);
+      }
     }
 
     try {
@@ -393,6 +460,7 @@ router.put('/:id', authenticate, requireAdmin, async (req, res) => {
       team_code, team_name, problem_statement_id, problem_statement_title,
       organization, category, track, team_leader, team_members, contact_info,
       presentation_status, demo_status, registration_status,
+      department, course, leader_phone, leader_email, leader_enrollment, submitter_email,
     } = req.body;
 
     // Check for duplicate code if changed
@@ -425,14 +493,22 @@ router.put('/:id', authenticate, requireAdmin, async (req, res) => {
           contact_info = COALESCE($10, contact_info),
           presentation_status = COALESCE($11, presentation_status),
           demo_status = COALESCE($12, demo_status),
-          registration_status = COALESCE($13, registration_status)
-         WHERE id = $14
+          registration_status = COALESCE($13, registration_status),
+          department = COALESCE($14, department),
+          course = COALESCE($15, course),
+          leader_phone = COALESCE($16, leader_phone),
+          leader_email = COALESCE($17, leader_email),
+          leader_enrollment = COALESCE($18, leader_enrollment),
+          submitter_email = COALESCE($19, submitter_email)
+         WHERE id = $20
          RETURNING *`,
         [
           team_code, team_name, problem_statement_id, problem_statement_title,
           organization, category, track, team_leader,
           team_members ? JSON.stringify(team_members) : null, contact_info,
-          presentation_status, demo_status, registration_status, req.params.id,
+          presentation_status, demo_status, registration_status,
+          department, course, leader_phone, leader_email, leader_enrollment, submitter_email,
+          req.params.id,
         ]
       );
     } catch (pgErr) {
@@ -451,11 +527,48 @@ router.put('/:id', authenticate, requireAdmin, async (req, res) => {
       if (presentation_status !== undefined) updateData.presentation_status = presentation_status;
       if (demo_status !== undefined) updateData.demo_status = demo_status;
       if (registration_status !== undefined) updateData.registration_status = registration_status;
+      if (department !== undefined) updateData.department = department;
+      if (course !== undefined) updateData.course = course;
+      if (leader_phone !== undefined) updateData.leader_phone = leader_phone;
+      if (leader_email !== undefined) updateData.leader_email = leader_email;
+      if (leader_enrollment !== undefined) updateData.leader_enrollment = leader_enrollment;
+      if (submitter_email !== undefined) updateData.submitter_email = submitter_email;
 
       const { data, error: supaErr } = await supabaseAdmin.from('teams').update(updateData).eq('id', req.params.id).select().single();
       if (supaErr) throw supaErr;
       team = data;
     }
+
+    // Sync team_members table if provided
+    if (team?.id && Array.isArray(team_members)) {
+      try {
+        await query('DELETE FROM team_members WHERE team_id = $1', [team.id]);
+        for (const m of team_members) {
+          await query(
+            `INSERT INTO team_members (team_id, member_number, name, email, enrollment_number, gender, department, is_girl_member)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [team.id, m.member_number, m.name, m.email || null, m.enrollment_number || null, m.gender || null, m.department || null, !!m.is_girl_member]
+          );
+        }
+      } catch {
+        await supabaseAdmin.from('team_members').delete().eq('team_id', team.id);
+        if (team_members.length > 0) {
+          const memberRows = team_members.map(m => ({
+            team_id: team.id,
+            member_number: m.member_number,
+            name: m.name,
+            email: m.email || null,
+            enrollment_number: m.enrollment_number || null,
+            gender: m.gender || null,
+            department: m.department || null,
+            is_girl_member: !!m.is_girl_member,
+          }));
+          await supabaseAdmin.from('team_members').insert(memberRows);
+        }
+      }
+    }
+
+    team.team_members = await getTeamMembersList(team.id, team.team_members);
 
     try {
       await logAction(req.user.id, 'team.updated', 'team', team.id,
@@ -491,6 +604,7 @@ router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
 
     // Explicitly cascade delete from dependent tables to guarantee safe deletion
     try {
+      await query('DELETE FROM team_members WHERE team_id = $1', [req.params.id]);
       await query('DELETE FROM evaluation_scores WHERE team_id = $1', [req.params.id]);
       await query('DELETE FROM evaluation_score_history WHERE team_id = $1', [req.params.id]);
       await query('DELETE FROM evaluations WHERE team_id = $1', [req.params.id]);
@@ -498,6 +612,7 @@ router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
       await query('DELETE FROM teams WHERE id = $1', [req.params.id]);
     } catch (pgErr) {
       console.warn('Postgres delete failed in DELETE /api/teams/:id, falling back to Supabase REST client:', pgErr.message);
+      await supabaseAdmin.from('team_members').delete().eq('team_id', req.params.id);
       await supabaseAdmin.from('evaluation_scores').delete().eq('team_id', req.params.id);
       await supabaseAdmin.from('evaluation_score_history').delete().eq('team_id', req.params.id);
       await supabaseAdmin.from('evaluations').delete().eq('team_id', req.params.id);

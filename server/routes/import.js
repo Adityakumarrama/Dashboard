@@ -10,24 +10,173 @@ import { sanitize } from '../utils/helpers.js';
 import { parse } from 'csv-parse/sync';
 import { XMLParser } from 'fast-xml-parser';
 import pdf from 'pdf-parse/lib/pdf-parse.js';
+import supabaseAdmin from '../config/supabase.js';
 
 const router = Router();
 
 // Default field mappings for auto-detection
 const KNOWN_HEADERS = {
-  'team_code': ['team_code', 'teamcode', 'team code', 'code', 'team id', 'teamid', 'team_id'],
+  'team_code': ['team_code', 'teamcode', 'team code', 'code', 'team id', 'teamid', 'team_id', 'problem code'],
   'team_name': ['team_name', 'teamname', 'team name', 'name', 'team'],
-  'problem_statement_id': ['problem_statement_id', 'problem_id', 'ps_id', 'problem id', 'psid'],
-  'problem_statement_title': ['problem_statement_title', 'problem_title', 'problem statement', 'problem', 'ps_title'],
+  'problem_statement_id': ['problem_statement_id', 'problem_id', 'ps_id', 'problem id', 'psid', 'problem code'],
+  'problem_statement_title': ['problem_statement_title', 'problem_title', 'problem statement', 'problem statement   (sih)', 'problem', 'ps_title'],
   'organization': ['organization', 'college', 'institute', 'university', 'org', 'institution', 'college_name'],
+  'department': ['department', 'dept', 'branch'],
+  'course': ['course', 'degree', 'program'],
   'category': ['category', 'type', 'cat'],
   'track': ['track', 'domain', 'theme'],
-  'team_leader': ['team_leader', 'leader', 'team_lead', 'captain'],
+  'team_leader': ['team_leader', 'leader', 'team_lead', 'captain', 'team leader name'],
+  'leader_phone': ['leader contact number', 'leader phone', 'leader contact', 'contact number', 'leader_phone'],
+  'leader_email': ['rama official email id leader', 'leader email', 'leader_email', 'official email id leader'],
+  'leader_enrollment': ['enrollment number (team leader)', 'leader enrollment', 'enrollment number leader', 'leader_enrollment'],
   'team_members': ['team_members', 'members', 'team_member'],
   'contact_info': ['contact_info', 'contact', 'email', 'phone', 'mobile'],
 };
 
 const DB_FIELDS = Object.keys(KNOWN_HEADERS);
+
+function isRamaFormat(headers) {
+  if (!Array.isArray(headers) || headers.length === 0) return false;
+  const joined = headers.map(h => String(h || '').toLowerCase().trim()).join(' ');
+  return (
+    joined.includes('member 1') &&
+    (joined.includes('rama official') || joined.includes('problem code') || joined.includes('team leader name') || joined.includes('enrollment number'))
+  );
+}
+
+function parseRamaRow(rawCells, headers, index, usedCodes) {
+  const getVal = (idx) => sanitize(String(rawCells[idx] || '').trim());
+
+  // Problem Code (SIH)
+  let problemCode = getVal(5);
+  // Team Name
+  const teamName = getVal(3) || `Team ${index + 1}`;
+  // Problem Statement
+  const problemTitle = getVal(6) || '';
+  // Submitter Email
+  const submitterEmail = getVal(0) || '';
+  // Department & Course
+  const department = getVal(1) || '';
+  const course = getVal(2) || '';
+
+  // Team Leader
+  const leaderContact = getVal(4) || '';
+  const leaderName = getVal(7) || '';
+  const leaderEmail = getVal(8) || '';
+  const leaderEnroll = getVal(9) || '';
+
+  // Clean and format team code
+  let teamCode = problemCode ? problemCode.replace(/[^a-zA-Z0-9_-]/g, '-').toUpperCase() : `SIH2026-TEAM-${index + 1}`;
+  if (!teamCode.startsWith('SIH')) teamCode = `SIH-${teamCode}`;
+
+  // Ensure unique team code
+  let uniqueCode = teamCode;
+  let counter = 1;
+  while (usedCodes.has(uniqueCode.toLowerCase())) {
+    counter++;
+    uniqueCode = `${teamCode}-${String(counter).padStart(2, '0')}`;
+  }
+  usedCodes.add(uniqueCode.toLowerCase());
+
+  // Extract up to 5 members
+  const members = [];
+
+  // Member 1 (Girl)
+  const m1Name = getVal(10);
+  if (m1Name) {
+    members.push({
+      member_number: 1,
+      name: m1Name,
+      email: getVal(11),
+      enrollment_number: getVal(12),
+      gender: getVal(13) || 'Female',
+      department: getVal(14) || department,
+      is_girl_member: true,
+    });
+  }
+
+  // Member 2
+  const m2Name = getVal(15);
+  if (m2Name) {
+    members.push({
+      member_number: 2,
+      name: m2Name,
+      gender: getVal(16) || 'Male',
+      email: getVal(17),
+      enrollment_number: getVal(18),
+      department: getVal(19) || department,
+      is_girl_member: false,
+    });
+  }
+
+  // Member 3
+  const m3Name = getVal(20);
+  if (m3Name) {
+    members.push({
+      member_number: 3,
+      name: m3Name,
+      gender: getVal(21) || 'Male',
+      email: getVal(22),
+      enrollment_number: getVal(23),
+      department: getVal(24) || department,
+      is_girl_member: false,
+    });
+  }
+
+  // Member 4
+  const m4Name = getVal(25);
+  if (m4Name) {
+    members.push({
+      member_number: 4,
+      name: m4Name,
+      email: getVal(26),
+      gender: getVal(27) || 'Male',
+      enrollment_number: getVal(28),
+      department: getVal(29) || department,
+      is_girl_member: false,
+    });
+  }
+
+  // Member 5
+  const m5Name = getVal(30);
+  if (m5Name) {
+    members.push({
+      member_number: 5,
+      name: m5Name,
+      email: getVal(31),
+      enrollment_number: getVal(32),
+      department: getVal(33) || department,
+      gender: 'Male',
+      is_girl_member: false,
+    });
+  }
+
+  const contactInfo = [
+    leaderName ? `Leader: ${leaderName}` : null,
+    leaderEmail ? `Email: ${leaderEmail}` : null,
+    leaderContact ? `Phone: ${leaderContact}` : null,
+  ].filter(Boolean).join(' | ');
+
+  return {
+    team_code: uniqueCode,
+    team_name: teamName,
+    problem_statement_id: problemCode || uniqueCode,
+    problem_statement_title: problemTitle,
+    organization: 'Rama University (F.E.T)',
+    department,
+    course,
+    category: 'Software',
+    track: department || course || 'Technology',
+    team_leader: leaderName,
+    leader_phone: leaderContact,
+    leader_email: leaderEmail,
+    leader_enrollment: leaderEnroll,
+    submitter_email: submitterEmail,
+    contact_info: contactInfo,
+    team_members: members,
+    raw_data: rawCells,
+  };
+}
 
 function autoMapFields(detectedHeaders) {
   const mapping = {};
@@ -40,7 +189,7 @@ function autoMapFields(detectedHeaders) {
       }
     }
     if (!mapping[header]) {
-      mapping[header] = null; // Unmapped
+      mapping[header] = null;
     }
   }
   return mapping;
@@ -76,19 +225,43 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
     let records = [];
     let detectedHeaders = [];
     let parseErrors = [];
+    let isRama = false;
+    const usedCodes = new Set();
 
-    if (ext === '.csv') {
+    if (ext === '.csv' || ext === '.tsv' || ext === '.txt') {
       try {
-        const parsed = parse(fileContent, {
-          columns: true,
+        const text = fileContent.toString('utf-8');
+        const firstLine = text.split('\n')[0] || '';
+        const delimiter = firstLine.includes('\t') ? '\t' : ',';
+
+        // Parse with columns: false to keep raw column array intact
+        const rawRows = parse(text, {
+          delimiter,
           skip_empty_lines: true,
           trim: true,
           relax_column_count: true,
         });
-        detectedHeaders = parsed.length > 0 ? Object.keys(parsed[0]) : [];
-        records = parsed;
+
+        if (rawRows.length > 0) {
+          detectedHeaders = rawRows[0];
+          isRama = isRamaFormat(detectedHeaders);
+
+          if (isRama) {
+            records = rawRows.slice(1).map((row, idx) => parseRamaRow(row, detectedHeaders, idx, usedCodes));
+          } else {
+            // Standard CSV mapping
+            const parsed = parse(text, {
+              delimiter,
+              columns: true,
+              skip_empty_lines: true,
+              trim: true,
+              relax_column_count: true,
+            });
+            records = parsed;
+          }
+        }
       } catch (e) {
-        parseErrors.push({ error: `CSV parse error: ${e.message}` });
+        parseErrors.push({ error: `CSV/TSV parse error: ${e.message}` });
       }
     } else if (ext === '.xml') {
       try {
@@ -98,7 +271,6 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
         });
         const result = parser.parse(fileContent);
 
-        // Try to find team array in various structures
         let teamArray = null;
         if (result.teams && result.teams.team) {
           teamArray = Array.isArray(result.teams.team) ? result.teams.team : [result.teams.team];
@@ -121,8 +293,6 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
       try {
         const pdfData = await pdf(fileContent);
         const text = pdfData.text;
-
-        // Attempt to extract team records from PDF text
         records = extractTeamsFromPdfText(text);
         if (records.length > 0) {
           detectedHeaders = Object.keys(records[0]);
@@ -134,47 +304,58 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
       }
     }
 
-    // Auto-map fields
-    const fieldMapping = autoMapFields(detectedHeaders);
+    let mappedRecords = [];
+    let fieldMapping = {};
 
-    // Apply mapping to records
-    const mappedRecords = records.map((record, idx) => {
-      const mapped = {};
-      for (const [header, dbField] of Object.entries(fieldMapping)) {
-        if (dbField && record[header] !== undefined) {
-          mapped[dbField] = sanitize(String(record[header] || ''));
+    if (isRama) {
+      mappedRecords = records;
+      fieldMapping = {
+        'Rama University SIH Format': 'Auto-detected (Leader + 5 Members, Dept, Course, Problem Code)',
+      };
+    } else {
+      fieldMapping = autoMapFields(detectedHeaders);
+      mappedRecords = records.map((record) => {
+        const mapped = {};
+        for (const [header, dbField] of Object.entries(fieldMapping)) {
+          if (dbField && record[header] !== undefined) {
+            mapped[dbField] = sanitize(String(record[header] || ''));
+          }
         }
-      }
-      return mapped;
-    });
+        return mapped;
+      });
+    }
 
     // Validate records
     const validationErrors = [];
     const validRecords = [];
     const duplicates = [];
 
-    // Check for existing team codes
-    const existingCodes = await queryAll('SELECT team_code FROM teams');
-    const existingCodeSet = new Set(existingCodes.map(t => t.team_code.toLowerCase()));
+    // Check for existing team codes in DB
+    let existingCodes = [];
+    try {
+      existingCodes = await queryAll('SELECT team_code FROM teams');
+    } catch {
+      const { data } = await supabaseAdmin.from('teams').select('team_code');
+      existingCodes = data || [];
+    }
+    const existingCodeSet = new Set((existingCodes || []).map(t => (t.team_code || '').toLowerCase()));
 
-    // Check for duplicates within the file
     const seenCodes = new Set();
 
     mappedRecords.forEach((record, idx) => {
       const rowErrors = validateRecord(record, idx);
       if (rowErrors.length > 0) {
         validationErrors.push(...rowErrors);
-      } else if (existingCodeSet.has(record.team_code.toLowerCase())) {
+      } else if (existingCodeSet.has((record.team_code || '').toLowerCase())) {
         duplicates.push({ ...record, _rowIndex: idx + 1, _reason: 'Already exists in database' });
-      } else if (seenCodes.has(record.team_code.toLowerCase())) {
+      } else if (seenCodes.has((record.team_code || '').toLowerCase())) {
         duplicates.push({ ...record, _rowIndex: idx + 1, _reason: 'Duplicate in file' });
       } else {
-        seenCodes.add(record.team_code.toLowerCase());
+        seenCodes.add((record.team_code || '').toLowerCase());
         validRecords.push({ ...record, _rowIndex: idx + 1 });
       }
     });
 
-    // Clean up the uploaded file if on disk
     if (req.file.path) {
       try { fs.unlinkSync(req.file.path); } catch {}
     }
@@ -184,6 +365,7 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
         name: req.file.originalname,
         type: ext.substring(1),
         size: req.file.size,
+        isRamaFormat: isRama,
       },
       detectedHeaders,
       fieldMapping,
@@ -218,85 +400,231 @@ router.post('/confirm', authenticate, requireAdmin, async (req, res) => {
       return res.status(400).json({ error: 'No records to import', code: 'NO_RECORDS' });
     }
 
-    // Create import record
-    const importRecord = await queryOne(
-      `INSERT INTO imports (user_id, file_name, file_type, total_records, status)
-       VALUES ($1, $2, $3, $4, 'processing') RETURNING *`,
-      [req.user.id, fileName || 'unknown', fileType || 'csv', records.length]
-    );
+    let importRecord = null;
+    try {
+      importRecord = await queryOne(
+        `INSERT INTO imports (user_id, file_name, file_type, total_records, status)
+         VALUES ($1, $2, $3, $4, 'processing') RETURNING *`,
+        [req.user.id, fileName || 'unknown', fileType || 'csv', records.length]
+      );
+    } catch {
+      const { data } = await supabaseAdmin.from('imports').insert({
+        user_id: req.user.id,
+        file_name: fileName || 'unknown',
+        file_type: fileType || 'csv',
+        total_records: records.length,
+        status: 'processing',
+      }).select().single();
+      importRecord = data;
+    }
 
     let created = 0, updated = 0, skipped = 0, failed = 0;
+    const insertedTeams = [];
 
     for (const record of records) {
       try {
-        // Remove internal fields
         const { _rowIndex, _reason, ...teamData } = record;
+        const cleanCode = sanitize(teamData.team_code);
+        const cleanName = sanitize(teamData.team_name);
 
-        const existing = await queryOne('SELECT id FROM teams WHERE team_code = $1', [teamData.team_code]);
+        let existing = null;
+        try {
+          existing = await queryOne('SELECT id FROM teams WHERE team_code = $1', [cleanCode]);
+        } catch {
+          const { data } = await supabaseAdmin.from('teams').select('id').eq('team_code', cleanCode).maybeSingle();
+          existing = data;
+        }
+
+        const teamPayload = {
+          team_code: cleanCode,
+          team_name: cleanName,
+          problem_statement_id: teamData.problem_statement_id || null,
+          problem_statement_title: teamData.problem_statement_title || null,
+          organization: teamData.organization || 'Rama University (F.E.T)',
+          department: teamData.department || null,
+          course: teamData.course || null,
+          category: teamData.category || 'Software',
+          track: teamData.track || teamData.department || 'Technology',
+          team_leader: teamData.team_leader || null,
+          leader_phone: teamData.leader_phone || null,
+          leader_email: teamData.leader_email || null,
+          leader_enrollment: teamData.leader_enrollment || null,
+          submitter_email: teamData.submitter_email || null,
+          contact_info: teamData.contact_info || null,
+          team_members: Array.isArray(teamData.team_members) ? teamData.team_members : [],
+          raw_data: teamData.raw_data || null,
+        };
+
+        let currentTeamId = null;
 
         if (existing) {
           if (duplicateStrategy === 'update' || duplicateStrategy === 'replace') {
-            await query(
-              `UPDATE teams SET
-                team_name = COALESCE($1, team_name),
-                problem_statement_id = COALESCE($2, problem_statement_id),
-                problem_statement_title = COALESCE($3, problem_statement_title),
-                organization = COALESCE($4, organization),
-                category = COALESCE($5, category),
-                track = COALESCE($6, track),
-                team_leader = COALESCE($7, team_leader),
-                team_members = COALESCE($8, team_members),
-                contact_info = COALESCE($9, contact_info)
-               WHERE id = $10`,
-              [
-                teamData.team_name, teamData.problem_statement_id, teamData.problem_statement_title,
-                teamData.organization, teamData.category, teamData.track,
-                teamData.team_leader, teamData.team_members ? JSON.stringify(teamData.team_members) : null,
-                teamData.contact_info, existing.id,
-              ]
-            );
+            try {
+              await query(
+                `UPDATE teams SET
+                  team_name = COALESCE($1, team_name),
+                  problem_statement_id = COALESCE($2, problem_statement_id),
+                  problem_statement_title = COALESCE($3, problem_statement_title),
+                  organization = COALESCE($4, organization),
+                  category = COALESCE($5, category),
+                  track = COALESCE($6, track),
+                  team_leader = COALESCE($7, team_leader),
+                  team_members = COALESCE($8, team_members),
+                  contact_info = COALESCE($9, contact_info),
+                  department = COALESCE($10, department),
+                  course = COALESCE($11, course),
+                  leader_phone = COALESCE($12, leader_phone),
+                  leader_email = COALESCE($13, leader_email),
+                  leader_enrollment = COALESCE($14, leader_enrollment),
+                  submitter_email = COALESCE($15, submitter_email)
+                 WHERE id = $16`,
+                [
+                  teamPayload.team_name, teamPayload.problem_statement_id, teamPayload.problem_statement_title,
+                  teamPayload.organization, teamPayload.category, teamPayload.track,
+                  teamPayload.team_leader, JSON.stringify(teamPayload.team_members),
+                  teamPayload.contact_info, teamPayload.department, teamPayload.course,
+                  teamPayload.leader_phone, teamPayload.leader_email, teamPayload.leader_enrollment,
+                  teamPayload.submitter_email, existing.id,
+                ]
+              );
+            } catch {
+              await supabaseAdmin.from('teams').update(teamPayload).eq('id', existing.id);
+            }
+            currentTeamId = existing.id;
             updated++;
           } else {
             skipped++;
+            continue;
           }
         } else {
-          await query(
-            `INSERT INTO teams (team_code, team_name, problem_statement_id, problem_statement_title,
-              organization, category, track, team_leader, team_members, contact_info)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-            [
-              teamData.team_code, teamData.team_name, teamData.problem_statement_id || null,
-              teamData.problem_statement_title || null, teamData.organization || null,
-              teamData.category || null, teamData.track || null, teamData.team_leader || null,
-              teamData.team_members ? JSON.stringify(teamData.team_members) : '[]',
-              teamData.contact_info || null,
-            ]
-          );
+          try {
+            const insRes = await queryOne(
+              `INSERT INTO teams (
+                team_code, team_name, problem_statement_id, problem_statement_title,
+                organization, category, track, team_leader, team_members, contact_info,
+                department, course, leader_phone, leader_email, leader_enrollment, submitter_email, raw_data
+              )
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+              RETURNING id`,
+              [
+                teamPayload.team_code, teamPayload.team_name, teamPayload.problem_statement_id,
+                teamPayload.problem_statement_title, teamPayload.organization, teamPayload.category,
+                teamPayload.track, teamPayload.team_leader, JSON.stringify(teamPayload.team_members),
+                teamPayload.contact_info, teamPayload.department, teamPayload.course,
+                teamPayload.leader_phone, teamPayload.leader_email, teamPayload.leader_enrollment,
+                teamPayload.submitter_email, teamPayload.raw_data ? JSON.stringify(teamPayload.raw_data) : null,
+              ]
+            );
+            currentTeamId = insRes?.id;
+          } catch {
+            const { data } = await supabaseAdmin.from('teams').insert(teamPayload).select('id').single();
+            currentTeamId = data?.id;
+          }
           created++;
+          if (currentTeamId) insertedTeams.push(currentTeamId);
+        }
+
+        // Insert/update team_members relational rows
+        if (currentTeamId && Array.isArray(teamPayload.team_members) && teamPayload.team_members.length > 0) {
+          try {
+            await query('DELETE FROM team_members WHERE team_id = $1', [currentTeamId]);
+            for (const m of teamPayload.team_members) {
+              await query(
+                `INSERT INTO team_members (team_id, member_number, name, email, enrollment_number, gender, department, is_girl_member)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                [currentTeamId, m.member_number, m.name, m.email || null, m.enrollment_number || null, m.gender || null, m.department || null, !!m.is_girl_member]
+              );
+            }
+          } catch {
+            await supabaseAdmin.from('team_members').delete().eq('team_id', currentTeamId);
+            const memberInserts = teamPayload.team_members.map(m => ({
+              team_id: currentTeamId,
+              member_number: m.member_number,
+              name: m.name,
+              email: m.email || null,
+              enrollment_number: m.enrollment_number || null,
+              gender: m.gender || null,
+              department: m.department || null,
+              is_girl_member: !!m.is_girl_member,
+            }));
+            await supabaseAdmin.from('team_members').insert(memberInserts);
+          }
         }
       } catch (e) {
         failed++;
-        await query(
-          'INSERT INTO import_errors (import_id, row_number, error, raw_data) VALUES ($1, $2, $3, $4)',
-          [importRecord.id, record._rowIndex || 0, e.message, JSON.stringify(record)]
-        );
+        console.error('Record import error:', e);
+        if (importRecord?.id) {
+          try {
+            await query(
+              'INSERT INTO import_errors (import_id, row_number, error, raw_data) VALUES ($1, $2, $3, $4)',
+              [importRecord.id, record._rowIndex || 0, e.message, JSON.stringify(record)]
+            );
+          } catch {}
+        }
       }
     }
 
-    // Update import record
-    await query(
-      `UPDATE imports SET status = 'completed', created_count = $1, updated_count = $2,
-        skipped_count = $3, failed_count = $4
-       WHERE id = $5`,
-      [created, updated, skipped, failed, importRecord.id]
-    );
+    // Auto-assign new teams across active jury members
+    if (insertedTeams.length > 0) {
+      try {
+        let activeJuries = [];
+        try {
+          activeJuries = await queryAll("SELECT id FROM users WHERE role = 'JURY' AND status = 'active'");
+        } catch {
+          const { data } = await supabaseAdmin.from('users').select('id').eq('role', 'JURY').eq('status', 'active');
+          activeJuries = data || [];
+        }
 
-    await logAction(req.user.id, 'import.completed', 'import', importRecord.id,
-      { fileName, fileType, created, updated, skipped, failed }, getClientIp(req));
+        if (activeJuries.length > 0) {
+          for (const teamId of insertedTeams) {
+            for (const jury of activeJuries) {
+              try {
+                await query(
+                  'INSERT INTO jury_assignments (user_id, team_id, assigned_by) VALUES ($1, $2, $3) ON CONFLICT (user_id, team_id) DO NOTHING',
+                  [jury.id, teamId, req.user.id]
+                );
+              } catch {
+                await supabaseAdmin.from('jury_assignments').upsert({
+                  user_id: jury.id,
+                  team_id: teamId,
+                  assigned_by: req.user.id,
+                }, { onConflict: 'user_id,team_id' });
+              }
+            }
+          }
+        }
+      } catch (assignErr) {
+        console.warn('Auto-assign post-import notice:', assignErr.message);
+      }
+    }
+
+    if (importRecord?.id) {
+      try {
+        await query(
+          `UPDATE imports SET status = 'completed', created_count = $1, updated_count = $2,
+            skipped_count = $3, failed_count = $4
+           WHERE id = $5`,
+          [created, updated, skipped, failed, importRecord.id]
+        );
+      } catch {
+        await supabaseAdmin.from('imports').update({
+          status: 'completed',
+          created_count: created,
+          updated_count: updated,
+          skipped_count: skipped,
+          failed_count: failed,
+        }).eq('id', importRecord.id);
+      }
+    }
+
+    try {
+      await logAction(req.user.id, 'import.completed', 'import', importRecord?.id,
+        { fileName, fileType, created, updated, skipped, failed }, getClientIp(req));
+    } catch {}
 
     res.json({
-      message: 'Import completed',
-      importId: importRecord.id,
+      message: 'Import completed successfully',
+      importId: importRecord?.id,
       results: { created, updated, skipped, failed },
     });
   } catch (error) {
@@ -310,13 +638,19 @@ router.post('/confirm', authenticate, requireAdmin, async (req, res) => {
  */
 router.get('/history', authenticate, requireAdmin, async (req, res) => {
   try {
-    const imports = await queryAll(
-      `SELECT i.*, u.full_name as imported_by
-       FROM imports i
-       JOIN users u ON i.user_id = u.id
-       ORDER BY i.created_at DESC
-       LIMIT 50`
-    );
+    let imports = [];
+    try {
+      imports = await queryAll(
+        `SELECT i.*, u.full_name as imported_by
+         FROM imports i
+         JOIN users u ON i.user_id = u.id
+         ORDER BY i.created_at DESC
+         LIMIT 50`
+      );
+    } catch {
+      const { data } = await supabaseAdmin.from('imports').select('*, users(full_name)').order('created_at', { ascending: false }).limit(50);
+      imports = (data || []).map(i => ({ ...i, imported_by: i.users?.full_name }));
+    }
     res.json({ imports });
   } catch (error) {
     console.error('Import history error:', error);
@@ -331,41 +665,54 @@ router.get('/history', authenticate, requireAdmin, async (req, res) => {
 router.get('/templates/:format', authenticate, requireAdmin, (req, res) => {
   const format = req.params.format.toLowerCase();
 
-  if (format === 'csv') {
-    const csv = `team_code,team_name,problem_statement_id,problem_statement_title,organization,category,track,team_leader,team_members,contact_info
-SIH2026-001,AgriVision,PS-1042,AI Based Crop Monitoring,XYZ Institute of Technology,Software,Agriculture,Rahul Kumar,"Priya Singh;Amit Shah;Neha Verma",rahul@example.com
-SIH2026-002,MediConnect,PS-2051,Smart Healthcare Platform,ABC Engineering College,Software,Healthcare,Sita Patel,"Ravi Sharma;Meera Joshi",sita@example.com`;
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename="team_import_template.csv"');
-    return res.send(csv);
+  if (format === 'csv' || format === 'tsv') {
+    const isTsv = format === 'tsv';
+    const sep = isTsv ? '\t' : ',';
+    const headers = [
+      'Email Address', 'Department', 'Course', 'Team Name', 'Leader Contact Number',
+      'Problem Code (SIH)( Like: SIHXXXXX)', 'Problem Statement   (SIH)',
+      'Team Leader Name   ( Like:  Name -F.E.T)', 'Rama official Email id Leader', 'Enrollment Number (Team Leader)',
+      'Member 1 - Girl     ( Like:  Name -F.E.T)', 'Email id  (Rama official) Member 1', 'Enrollment Number (Member 1)', 'Gender', 'Department',
+      'Member 2     ( Like:  Name -F.E.T)', 'Gender', 'Email id (Rama official) Member 2', 'Enrollment Number (Member 2)', 'Department',
+      'Member 3     ( Like:  Name -FET)', 'Gender', 'Email id (Rama offical ) Member 3', 'Enrollment Number (Member 3)', 'Department',
+      'Member 4     ( Like:  Name -F.E.T)', 'Email id (Rama official) Member 4', 'Gender', 'Enrollment Number (Member 4)', 'Department',
+      'Member 5  ( Like:  Name -F.E.T)', 'Email id (Rama offical )Member 5', 'Enrollment Number (Member 5)', 'Department'
+    ];
+
+    const row1 = [
+      'leader@ramauniversity.ac.in', 'Computer Science & Engineering', 'B.Tech CSE', 'Code Mavericks', '9876543210',
+      'SIH1523', 'AI Powered Real-time Traffic Management System',
+      'Rahul Sharma - F.E.T', 'rahul.sharma@ramauniversity.ac.in', 'RU2022CSE045',
+      'Priya Patel - F.E.T', 'priya.patel@ramauniversity.ac.in', 'RU2022CSE088', 'Female', 'Computer Science & Engineering',
+      'Aman Verma - F.E.T', 'Male', 'aman.verma@ramauniversity.ac.in', 'RU2022CSE012', 'Computer Science & Engineering',
+      'Rohan Gupta - FET', 'Male', 'rohan.gupta@ramauniversity.ac.in', 'RU2022CSE067', 'Computer Science & Engineering',
+      'Sneha Singh - F.E.T', 'sneha.singh@ramauniversity.ac.in', 'Female', 'RU2022IT019', 'Information Technology',
+      'Vikas Yadav - F.E.T', 'vikas.yadav@ramauniversity.ac.in', 'RU2022ME004', 'Mechanical Engineering'
+    ];
+
+    const output = [
+      headers.join(sep),
+      row1.map(v => isTsv ? v : `"${v.replace(/"/g, '""')}"`).join(sep)
+    ].join('\n');
+
+    res.setHeader('Content-Type', isTsv ? 'text/tab-separated-values' : 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="rama_sih_team_template.${format}"`);
+    return res.send(output);
   }
 
   if (format === 'xml') {
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <teams>
     <team>
-        <team_code>SIH2026-001</team_code>
-        <team_name>AgriVision</team_name>
-        <problem_statement_id>PS-1042</problem_statement_id>
-        <problem_statement_title>AI Based Crop Monitoring</problem_statement_title>
-        <organization>XYZ Institute of Technology</organization>
+        <team_code>SIH1523</team_code>
+        <team_name>Code Mavericks</team_name>
+        <problem_statement_id>SIH1523</problem_statement_id>
+        <problem_statement_title>AI Powered Real-time Traffic Management System</problem_statement_title>
+        <organization>Rama University (F.E.T)</organization>
         <category>Software</category>
-        <track>Agriculture</track>
-        <team_leader>Rahul Kumar</team_leader>
-        <team_members>Priya Singh;Amit Shah;Neha Verma</team_members>
-        <contact_info>rahul@example.com</contact_info>
-    </team>
-    <team>
-        <team_code>SIH2026-002</team_code>
-        <team_name>MediConnect</team_name>
-        <problem_statement_id>PS-2051</problem_statement_id>
-        <problem_statement_title>Smart Healthcare Platform</problem_statement_title>
-        <organization>ABC Engineering College</organization>
-        <category>Software</category>
-        <track>Healthcare</track>
-        <team_leader>Sita Patel</team_leader>
-        <team_members>Ravi Sharma;Meera Joshi</team_members>
-        <contact_info>sita@example.com</contact_info>
+        <track>Computer Science &amp; Engineering</track>
+        <team_leader>Rahul Sharma - F.E.T</team_leader>
+        <contact_info>rahul.sharma@ramauniversity.ac.in | 9876543210</contact_info>
     </team>
 </teams>`;
     res.setHeader('Content-Type', 'application/xml');
@@ -373,31 +720,16 @@ SIH2026-002,MediConnect,PS-2051,Smart Healthcare Platform,ABC Engineering Colleg
     return res.send(xml);
   }
 
-  res.status(400).json({ error: 'Unsupported format. Use csv or xml', code: 'INVALID_FORMAT' });
+  res.status(400).json({ error: 'Unsupported format. Use csv, tsv or xml', code: 'INVALID_FORMAT' });
 });
 
-/**
- * Extract team records from raw PDF text using heuristic patterns
- */
 function extractTeamsFromPdfText(text) {
   const teams = [];
-
-  // Pattern: Look for team code patterns (e.g., SIH2026-001, SIH-001, TEAM-001)
   const teamCodePattern = /\b(SIH[\-_]?\d{4}[\-_]\d{1,4}|TEAM[\-_]\d{1,4}|[A-Z]{2,5}[\-_]\d{3,6})\b/gi;
   const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-
-  // Try tabular detection — look for consistent separators
-  const tabularRecords = tryTabularExtraction(lines);
-  if (tabularRecords.length > 0) return tabularRecords;
-
-  // Fallback: segment by team code and extract fields
-  let currentTeam = null;
   const codeMatches = [...text.matchAll(teamCodePattern)];
 
-  if (codeMatches.length === 0) {
-    // No team codes found — try line-by-line keyword extraction
-    return tryKeywordExtraction(lines);
-  }
+  if (codeMatches.length === 0) return [];
 
   for (const match of codeMatches) {
     const codeIdx = match.index;
@@ -416,14 +748,6 @@ function extractTeamsFromPdfText(text) {
       team_leader: extractField(segment, ['leader', 'captain', 'team lead']),
     };
 
-    // Clean up: if team_name is still the code, try the next non-empty token
-    if (!team.team_name || team.team_name === team.team_code) {
-      const segLines = segment.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-      if (segLines.length > 1) {
-        team.team_name = segLines[1].replace(/^[\-:]+/, '').trim().substring(0, 100);
-      }
-    }
-
     if (team.team_code) {
       teams.push(team);
     }
@@ -441,55 +765,6 @@ function extractField(text, keywords, skip = '') {
     }
   }
   return null;
-}
-
-function tryTabularExtraction(lines) {
-  // Look for header line containing known field names
-  const records = [];
-  let headerIdx = -1;
-  let headers = [];
-
-  for (let i = 0; i < Math.min(lines.length, 10); i++) {
-    const line = lines[i].toLowerCase();
-    if ((line.includes('team') && line.includes('code')) ||
-        (line.includes('team') && line.includes('name'))) {
-      // Possible header — split by common delimiters
-      headers = lines[i].split(/[|\t]/).map(h => h.trim()).filter(h => h.length > 0);
-      if (headers.length >= 2) {
-        headerIdx = i;
-        break;
-      }
-    }
-  }
-
-  if (headerIdx === -1) return [];
-
-  const mapping = autoMapFields(headers);
-
-  for (let i = headerIdx + 1; i < lines.length; i++) {
-    const values = lines[i].split(/[|\t]/).map(v => v.trim()).filter(v => v.length > 0);
-    if (values.length < 2) continue;
-    if (values.every(v => v === '-' || v === '—' || v === '')) continue;
-
-    const record = {};
-    headers.forEach((header, idx) => {
-      const dbField = mapping[header];
-      if (dbField && values[idx]) {
-        record[dbField] = values[idx];
-      }
-    });
-
-    if (record.team_code) {
-      records.push(record);
-    }
-  }
-
-  return records;
-}
-
-function tryKeywordExtraction(lines) {
-  // Group lines by detecting team-like boundaries
-  return [];
 }
 
 export default router;

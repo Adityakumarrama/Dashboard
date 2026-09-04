@@ -16,6 +16,7 @@ export default function JuryTeamEvaluate() {
   const [comments, setComments] = useState({}); // { [criteria_id]: comment_str }
   const [overallComments, setOverallComments] = useState('');
   const [criteriaList, setCriteriaList] = useState([]);
+  const [showRoster, setShowRoster] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
@@ -121,33 +122,37 @@ export default function JuryTeamEvaluate() {
       return;
     }
 
-    if (!confirm('Are you sure you want to submit your final evaluation? Once submitted, it cannot be changed without admin approval.')) {
+    if (!confirm(`Are you sure you want to submit official evaluation for ${team.team_code}?\n\nTotal Score: ${calculateTotal()}/${totalMax}\n\nOnce submitted, scores cannot be edited.`)) {
       return;
     }
 
     try {
       setSubmitting(true);
-      // 1. Force save current data first
-      await saveDraftPayload({ scores, comments, overallComments });
-      // 2. Submit & lock
-      await api.post(`/evaluations/${evaluation.id}/submit`);
+      const formattedScores = Object.entries(scores).map(([critId, scVal]) => ({
+        criteria_id: critId,
+        criterion_id: critId,
+        score: Number(scVal),
+        comment: comments[critId] || null,
+      }));
+
+      await api.post(`/evaluations/${evaluation.id}/submit`, {
+        scores: formattedScores,
+        comments: overallComments,
+      });
+
       toast.success('Evaluation submitted successfully!');
-      navigate('/jury/completed');
+      navigate('/jury/teams');
     } catch (err) {
-      toast.error(err.message || 'Submission failed');
+      toast.error(err.message || 'Failed to submit evaluation');
     } finally {
       setSubmitting(false);
     }
   };
 
-  if (loading) {
-    return (
-      <div>
-        <div className="skeleton skeleton-card" style={{ height: 180, marginBottom: 'var(--space-6)' }} />
-        <div className="skeleton skeleton-card" style={{ height: 400 }} />
-      </div>
-    );
-  }
+  if (loading) return <div className="skeleton skeleton-card" style={{ height: 400 }} />;
+  if (!team) return <div className="empty-state"><div className="empty-state-title">Team not found</div></div>;
+
+  const members = Array.isArray(team.team_members) ? team.team_members : [];
 
   return (
     <div>
@@ -164,26 +169,84 @@ export default function JuryTeamEvaluate() {
             <div className="eval-team-code">{team?.team_code}</div>
             <div className="eval-team-name">{team?.team_name}</div>
           </div>
-          <span className={`badge ${getStatusClass(evaluation?.status)}`} style={{ fontSize: 'var(--text-sm)', padding: '4px 12px' }}>
-            {evaluation?.status?.toUpperCase()}
-          </span>
+          <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
+            <button
+              className="btn btn-ghost btn-sm"
+              style={{ color: '#fff', border: '1px solid rgba(255,255,255,0.3)' }}
+              onClick={() => setShowRoster(!showRoster)}
+            >
+              👥 {showRoster ? 'Hide Roster' : 'View Roster'}
+            </button>
+            <span className={`badge ${getStatusClass(evaluation?.status)}`} style={{ fontSize: 'var(--text-sm)', padding: '4px 12px' }}>
+              {evaluation?.status?.toUpperCase()}
+            </span>
+          </div>
         </div>
 
         <div className="eval-team-details">
           <div>
             <div className="eval-detail-label">Problem Statement</div>
-            <div className="eval-detail-value">{team?.problem_statement_title || 'N/A'}</div>
+            <div className="eval-detail-value">
+              {team?.problem_statement_id && <span className="tag" style={{ marginRight: 4 }}>{team.problem_statement_id}</span>}
+              {team?.problem_statement_title || 'N/A'}
+            </div>
           </div>
           <div>
-            <div className="eval-detail-label">Organization</div>
-            <div className="eval-detail-value">{team?.organization || 'N/A'}</div>
+            <div className="eval-detail-label">Department & Course</div>
+            <div className="eval-detail-value">{team?.department || team?.track || 'N/A'} {team?.course ? `(${team.course})` : ''}</div>
           </div>
           <div>
-            <div className="eval-detail-label">Category / Track</div>
-            <div className="eval-detail-value">{team?.category || 'N/A'} / {team?.track || 'N/A'}</div>
+            <div className="eval-detail-label">Team Leader</div>
+            <div className="eval-detail-value">
+              {team?.team_leader || 'N/A'}
+              {team?.leader_enrollment && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', marginLeft: 6 }}>({team.leader_enrollment})</span>}
+            </div>
           </div>
         </div>
       </div>
+
+      {/* Toggleable Team Roster for Jury Verification */}
+      {showRoster && (
+        <div className="card" style={{ marginBottom: 'var(--space-6)', border: '1.5px solid var(--color-accent-light)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' }}>
+            <h4 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+              <span>👥</span> Student Roster for Identity Verification
+            </h4>
+            <span className="tag">{members.length + 1} Total Members</span>
+          </div>
+
+          <div style={{ padding: 'var(--space-3)', background: 'var(--color-bg-surface-alt)', borderRadius: 'var(--radius-md)', marginBottom: 'var(--space-3)' }}>
+            <strong>👑 Team Leader:</strong> {team?.team_leader || 'N/A'} |
+            <span style={{ marginLeft: 6 }}>Enrollment: <strong style={{ fontFamily: 'var(--font-mono)' }}>{team?.leader_enrollment || '—'}</strong></span> |
+            <span style={{ marginLeft: 6 }}>Email: <strong>{team?.leader_email || '—'}</strong></span>
+          </div>
+
+          <div className="roster-grid">
+            {members.map((m, idx) => {
+              const isGirl = !!m.is_girl_member || m.member_number === 1;
+              return (
+                <div key={idx} className={`roster-card ${isGirl ? 'girl-member' : ''}`} style={{ padding: 'var(--space-3)' }}>
+                  <div className="roster-card-header" style={{ marginBottom: 4, paddingBottom: 4 }}>
+                    <span className="roster-card-title">Member {m.member_number || idx + 1}</span>
+                    {isGirl ? (
+                      <span className="badge-girl">👩 Girl Member</span>
+                    ) : (
+                      <span className="tag" style={{ fontSize: 10 }}>{m.gender || 'Member'}</span>
+                    )}
+                  </div>
+                  <div style={{ fontWeight: 600, fontSize: 'var(--text-sm)' }}>{m.name || '—'}</div>
+                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', marginTop: 2 }}>
+                    Enrollment: <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-primary)' }}>{m.enrollment_number || '—'}</span>
+                  </div>
+                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>
+                    Dept: {m.department || '—'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Scoring Form */}
       <div className="card" style={{ marginBottom: 'var(--space-6)' }}>

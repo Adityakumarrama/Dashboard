@@ -18,7 +18,10 @@ export default function ImportCenter() {
 
   const handleFile = (f) => {
     const ext = f.name.split('.').pop().toLowerCase();
-    if (!['csv', 'xml', 'pdf'].includes(ext)) { toast.error('Only CSV, XML, and PDF files are supported'); return; }
+    if (!['csv', 'tsv', 'txt', 'xml', 'pdf'].includes(ext)) {
+      toast.error('Supported formats: CSV, TSV, TXT, XML, and PDF');
+      return;
+    }
     setFile(f);
   };
 
@@ -53,14 +56,14 @@ export default function ImportCenter() {
   return (
     <div>
       <div className="page-header">
-        <div><h1 className="page-title">Import Center</h1><p className="page-subtitle">Import team data from CSV, XML, or PDF</p></div>
+        <div><h1 className="page-title">Import Center</h1><p className="page-subtitle">Import team data from Rama Google Forms (CSV/TSV), XML, or PDF</p></div>
       </div>
 
       {/* Steps */}
       <div className="steps">
         {STEPS.map((s, i) => (
           <div key={s}>
-            {i > 0 && <span className={`step-connector ${i <= step ? 'completed' : ''}`} style={{ display: 'inline-block', margin: '0 4px' }} />}
+            {i > 0 && <span className="step-connector" style={{ display: 'inline-block', margin: '0 4px' }} />}
             <span className={`step ${i === step ? 'active' : i < step ? 'completed' : ''}`}>
               <span className="step-number">{i < step ? '✓' : i + 1}</span>
               <span>{s}</span>
@@ -81,12 +84,12 @@ export default function ImportCenter() {
           >
             <div className="upload-zone-icon">📂</div>
             <div className="upload-zone-text">
-              {file ? file.name : 'Drag & Drop your file here'}
+              {file ? file.name : 'Drag & Drop your Rama SIH Form Export here'}
             </div>
             <div className="upload-zone-hint">
-              {file ? `${formatFileSize(file.size)} — ${file.name.split('.').pop().toUpperCase()}` : 'Supported formats: CSV, XML, PDF (Max 10MB)'}
+              {file ? `${formatFileSize(file.size)} — ${file.name.split('.').pop().toUpperCase()}` : 'Supports CSV, TSV (Google Sheets/Form), TXT, XML, PDF (Max 10MB)'}
             </div>
-            <input id="file-input" type="file" accept=".csv,.xml,.pdf" style={{ display: 'none' }} onChange={e => e.target.files[0] && handleFile(e.target.files[0])} />
+            <input id="file-input" type="file" accept=".csv,.tsv,.txt,.xml,.pdf" style={{ display: 'none' }} onChange={e => e.target.files[0] && handleFile(e.target.files[0])} />
           </div>
 
           {file && (
@@ -97,9 +100,10 @@ export default function ImportCenter() {
             </div>
           )}
 
-          <div className="import-templates">
-            <button className="btn btn-secondary btn-sm" onClick={() => handleDownloadTemplate('csv')}>📥 Download CSV Template</button>
-            <button className="btn btn-secondary btn-sm" onClick={() => handleDownloadTemplate('xml')}>📥 Download XML Template</button>
+          <div className="import-templates" style={{ flexWrap: 'wrap' }}>
+            <button className="btn btn-secondary btn-sm" onClick={() => handleDownloadTemplate('csv')}>📥 Download Rama SIH CSV Template</button>
+            <button className="btn btn-secondary btn-sm" onClick={() => handleDownloadTemplate('tsv')}>📥 Download Rama SIH TSV Template</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => handleDownloadTemplate('xml')}>📥 Download XML Template</button>
           </div>
         </div>
       )}
@@ -108,6 +112,16 @@ export default function ImportCenter() {
       {step === 1 && importData && (
         <div className="card">
           <h3>File Analysis</h3>
+          {importData.isRamaFormat && (
+            <div style={{ marginTop: 'var(--space-4)', padding: 'var(--space-4)', background: 'rgba(79, 70, 229, 0.08)', border: '1.5px solid var(--color-accent-light)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontWeight: 600, color: 'var(--color-accent)' }}>
+                <span>🎓</span> Rama University F.E.T Google Form Format Recognized!
+              </div>
+              <p style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-secondary)', marginTop: 4, marginBottom: 0 }}>
+                All 34 columns (Submitter, Department, Course, Team Leader, and 5 Members with Girl Member auto-flagged) have been detected and structured.
+              </p>
+            </div>
+          )}
           <div className="import-summary-grid" style={{ marginTop: 'var(--space-4)' }}>
             <div className="import-summary-item" style={{ background: 'var(--color-bg-surface-alt)' }}>
               <div className="import-summary-count">{importData.file?.name}</div>
@@ -207,16 +221,35 @@ export default function ImportCenter() {
           <h3>Preview ({importData.validRecords?.length} records)</h3>
           <div className="table-container" style={{ maxHeight: 400, overflow: 'auto', marginTop: 'var(--space-4)' }}>
             <table className="table">
-              <thead><tr><th>#</th><th>Team Code</th><th>Team Name</th><th>Organization</th><th>Category</th><th>Track</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Team Code</th>
+                  <th>Team Name</th>
+                  <th>Department & Course</th>
+                  <th>Team Leader</th>
+                  <th>Members</th>
+                </tr>
+              </thead>
               <tbody>
                 {importData.validRecords?.slice(0, 50).map((r, i) => (
                   <tr key={i}>
                     <td>{r._rowIndex}</td>
                     <td style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)', fontWeight: 600 }}>{r.team_code}</td>
-                    <td>{r.team_name}</td>
-                    <td>{r.organization}</td>
-                    <td>{r.category}</td>
-                    <td>{r.track}</td>
+                    <td><strong>{r.team_name}</strong></td>
+                    <td>
+                      <div>{r.department || r.track || '—'}</div>
+                      {r.course && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>{r.course}</div>}
+                    </td>
+                    <td>
+                      <div>{r.team_leader || '—'}</div>
+                      {r.leader_enrollment && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)' }}>{r.leader_enrollment}</div>}
+                    </td>
+                    <td>
+                      <span className="tag">
+                        {Array.isArray(r.team_members) && r.team_members.length > 0 ? `${r.team_members.length} Members` : '—'}
+                      </span>
+                    </td>
                   </tr>
                 ))}
               </tbody>

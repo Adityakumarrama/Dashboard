@@ -11,7 +11,12 @@ export default function AdminTeams() {
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState({ team_code: '', team_name: '', problem_statement_id: '', problem_statement_title: '', organization: '', category: '', track: '', team_leader: '' });
+  const initialForm = {
+    team_code: '', team_name: '', problem_statement_id: '', problem_statement_title: '',
+    organization: 'Rama University (F.E.T)', category: 'Software', track: '', team_leader: '',
+    department: '', course: '', leader_phone: '', leader_email: '', leader_enrollment: '', submitter_email: '',
+  };
+  const [form, setForm] = useState(initialForm);
   const toast = useToast();
   const navigate = useNavigate();
 
@@ -33,7 +38,7 @@ export default function AdminTeams() {
       await api.post('/teams', form);
       toast.success('Team created successfully');
       setShowCreate(false);
-      setForm({ team_code: '', team_name: '', problem_statement_id: '', problem_statement_title: '', organization: '', category: '', track: '', team_leader: '' });
+      setForm(initialForm);
       fetchTeams();
     } catch (err) { toast.error(err.message); }
   };
@@ -64,7 +69,7 @@ export default function AdminTeams() {
       <div className="toolbar">
         <div className="search-container" style={{ flex: 1, maxWidth: 400 }}>
           <span className="search-icon">🔍</span>
-          <input className="input" placeholder="Search teams by code, name, or organization..." value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} />
+          <input className="input" placeholder="Search teams by code, name, department..." value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} />
         </div>
       </div>
 
@@ -75,10 +80,9 @@ export default function AdminTeams() {
             <tr>
               <th>Team Code</th>
               <th>Team Name</th>
+              <th>Department / Course</th>
               <th>Problem Statement</th>
-              <th>Organization</th>
-              <th>Category</th>
-              <th>Track</th>
+              <th>Team Leader</th>
               <th>Status</th>
               <th>Actions</th>
             </tr>
@@ -86,13 +90,13 @@ export default function AdminTeams() {
           <tbody>
             {loading ? (
               [...Array(5)].map((_, i) => (
-                <tr key={i}><td colSpan="8"><div className="skeleton skeleton-text" /></td></tr>
+                <tr key={i}><td colSpan="7"><div className="skeleton skeleton-text" /></td></tr>
               ))
             ) : teams.length === 0 ? (
-              <tr><td colSpan="8" className="empty-state">
+              <tr><td colSpan="7" className="empty-state">
                 <div className="empty-state-icon">👥</div>
                 <div className="empty-state-title">No teams found</div>
-                <div className="empty-state-text">Create teams or import them from CSV/XML/PDF</div>
+                <div className="empty-state-text">Create teams or import them from CSV/TSV</div>
               </td></tr>
             ) : (
               teams.map(team => (
@@ -102,14 +106,19 @@ export default function AdminTeams() {
                       {team.team_code}
                     </span>
                   </td>
-                  <td><strong>{truncate(team.team_name, 30)}</strong></td>
+                  <td><strong>{truncate(team.team_name, 28)}</strong></td>
+                  <td style={{ fontSize: 'var(--text-sm)' }}>
+                    <div>{team.department || team.track || '—'}</div>
+                    {team.course && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>{team.course}</div>}
+                  </td>
                   <td style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-secondary)' }}>
                     {team.problem_statement_id && <span className="tag" style={{ marginRight: 4 }}>{team.problem_statement_id}</span>}
                     {truncate(team.problem_statement_title, 25)}
                   </td>
-                  <td style={{ fontSize: 'var(--text-sm)' }}>{truncate(team.organization, 25)}</td>
-                  <td><span className="tag">{team.category || '—'}</span></td>
-                  <td style={{ fontSize: 'var(--text-sm)' }}>{team.track || '—'}</td>
+                  <td style={{ fontSize: 'var(--text-sm)' }}>
+                    <div><strong>{truncate(team.team_leader || '—', 20)}</strong></div>
+                    {team.leader_enrollment && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)' }}>{team.leader_enrollment}</div>}
+                  </td>
                   <td><span className={`badge ${getStatusClass(team.registration_status)}`}>{team.registration_status}</span></td>
                   <td>
                     <div style={{ display: 'flex', gap: 'var(--space-1)' }}>
@@ -152,35 +161,51 @@ export default function AdminTeams() {
                 <div className="grid grid-2" style={{ gap: 'var(--space-4)' }}>
                   <div className="form-group">
                     <label className="form-label">Team Code *</label>
-                    <input className="input" placeholder="SIH2026-001" value={form.team_code} onChange={e => setForm({...form, team_code: e.target.value})} required />
+                    <input className="input" placeholder="SIH1523" value={form.team_code} onChange={e => setForm({...form, team_code: e.target.value})} required />
                   </div>
                   <div className="form-group">
                     <label className="form-label">Team Name *</label>
-                    <input className="input" placeholder="AgriVision" value={form.team_name} onChange={e => setForm({...form, team_name: e.target.value})} required />
+                    <input className="input" placeholder="CodeCrafters" value={form.team_name} onChange={e => setForm({...form, team_name: e.target.value})} required />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Problem Statement ID</label>
-                    <input className="input" placeholder="PS-1042" value={form.problem_statement_id} onChange={e => setForm({...form, problem_statement_id: e.target.value})} />
+                    <label className="form-label">Department</label>
+                    <input className="input" placeholder="Computer Science & Engineering" value={form.department} onChange={e => setForm({...form, department: e.target.value, track: e.target.value})} />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Problem Statement Title</label>
-                    <input className="input" placeholder="AI Based Crop Monitoring" value={form.problem_statement_title} onChange={e => setForm({...form, problem_statement_title: e.target.value})} />
+                    <label className="form-label">Course</label>
+                    <input className="input" placeholder="B.Tech" value={form.course} onChange={e => setForm({...form, course: e.target.value})} />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Problem Code (SIH)</label>
+                    <input className="input" placeholder="SIH1523" value={form.problem_statement_id} onChange={e => setForm({...form, problem_statement_id: e.target.value})} />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Problem Statement</label>
+                    <input className="input" placeholder="Smart Attendance Tracking" value={form.problem_statement_title} onChange={e => setForm({...form, problem_statement_title: e.target.value})} />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Team Leader Name</label>
+                    <input className="input" placeholder="Rahul Sharma -F.E.T" value={form.team_leader} onChange={e => setForm({...form, team_leader: e.target.value})} />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Leader Rama Official Email</label>
+                    <input className="input" type="email" placeholder="rahul.fet@ramauniversity.ac.in" value={form.leader_email} onChange={e => setForm({...form, leader_email: e.target.value})} />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Leader Contact Number</label>
+                    <input className="input" placeholder="9876543210" value={form.leader_phone} onChange={e => setForm({...form, leader_phone: e.target.value})} />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Leader Enrollment Number</label>
+                    <input className="input" placeholder="RU2024FET001" value={form.leader_enrollment} onChange={e => setForm({...form, leader_enrollment: e.target.value})} />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Submitter Email</label>
+                    <input className="input" type="email" placeholder="submitter@gmail.com" value={form.submitter_email} onChange={e => setForm({...form, submitter_email: e.target.value})} />
                   </div>
                   <div className="form-group">
                     <label className="form-label">Organization</label>
-                    <input className="input" placeholder="XYZ Institute of Technology" value={form.organization} onChange={e => setForm({...form, organization: e.target.value})} />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Category</label>
-                    <input className="input" placeholder="Software" value={form.category} onChange={e => setForm({...form, category: e.target.value})} />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Track</label>
-                    <input className="input" placeholder="Agriculture" value={form.track} onChange={e => setForm({...form, track: e.target.value})} />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Team Leader</label>
-                    <input className="input" placeholder="Rahul Kumar" value={form.team_leader} onChange={e => setForm({...form, team_leader: e.target.value})} />
+                    <input className="input" value={form.organization} onChange={e => setForm({...form, organization: e.target.value})} />
                   </div>
                 </div>
               </div>
