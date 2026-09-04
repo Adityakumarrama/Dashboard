@@ -201,18 +201,24 @@ router.get('/team/:teamId', authenticate, requireAdmin, async (req, res) => {
         judge_id: e.users?.judge_id,
       }));
 
+      const { data: criteriaList } = await supabaseAdmin.from('scoring_criteria').select('*').order('sort_order');
+      const critMap = new Map((criteriaList || []).map(c => [c.id, c]));
       for (const eval_ of evaluations) {
         const { data: supaScores } = await supabaseAdmin
           .from('evaluation_scores')
-          .select('*, scoring_criteria(*)')
+          .select('*')
           .eq('evaluation_id', eval_.id);
-        eval_.scores = (supaScores || []).map(s => ({
-          ...s,
-          criteria_name: s.scoring_criteria?.name,
-          max_score: s.scoring_criteria?.max_score,
-          weight: s.scoring_criteria?.weight,
-          sort_order: s.scoring_criteria?.sort_order,
-        })).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+        eval_.scores = (supaScores || []).map(s => {
+          const c = critMap.get(s.criteria_id || s.criterion_id);
+          return {
+            ...s,
+            criteria_name: c?.name,
+            criteria_description: c?.description,
+            max_score: c?.max_score,
+            weight: c?.weight,
+            sort_order: c?.sort_order,
+          };
+        }).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
       }
     }
 
@@ -312,18 +318,23 @@ router.get('/:id', authenticate, requireAny, async (req, res) => {
       );
     } catch (pgErr) {
       console.warn('Postgres query failed for evaluation scores, falling back to Supabase REST:', pgErr.message);
+      const { data: criteriaList } = await supabaseAdmin.from('scoring_criteria').select('*').order('sort_order');
+      const critMap = new Map((criteriaList || []).map(c => [c.id, c]));
       const { data } = await supabaseAdmin
         .from('evaluation_scores')
-        .select('*, scoring_criteria(*)')
+        .select('*')
         .eq('evaluation_id', req.params.id);
-      scores = (data || []).map(s => ({
-        ...s,
-        criteria_name: s.scoring_criteria?.name,
-        criteria_description: s.scoring_criteria?.description,
-        max_score: s.scoring_criteria?.max_score,
-        weight: s.scoring_criteria?.weight,
-        sort_order: s.scoring_criteria?.sort_order,
-      })).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+      scores = (data || []).map(s => {
+        const c = critMap.get(s.criteria_id || s.criterion_id);
+        return {
+          ...s,
+          criteria_name: c?.name,
+          criteria_description: c?.description,
+          max_score: c?.max_score,
+          weight: c?.weight,
+          sort_order: c?.sort_order,
+        };
+      }).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
     }
 
     evaluation.scores = scores;
@@ -432,18 +443,23 @@ router.post('/', authenticate, requireAny, async (req, res) => {
           [evaluation.id]
         );
       } catch (pgErr) {
-        const { data } = await supabaseAdmin
+        const { data: criteriaList } = await supabaseAdmin.from('scoring_criteria').select('*').order('sort_order');
+        const critMap = new Map((criteriaList || []).map(c => [c.id, c]));
+        const { data: supaScores } = await supabaseAdmin
           .from('evaluation_scores')
-          .select('*, scoring_criteria(*)')
+          .select('*')
           .eq('evaluation_id', evaluation.id);
-        scores = (data || []).map(s => ({
-          ...s,
-          criteria_name: s.scoring_criteria?.name,
-          criteria_description: s.scoring_criteria?.description,
-          max_score: s.scoring_criteria?.max_score,
-          weight: s.scoring_criteria?.weight,
-          sort_order: s.scoring_criteria?.sort_order,
-        })).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+        scores = (supaScores || []).map(s => {
+          const c = critMap.get(s.criteria_id || s.criterion_id);
+          return {
+            ...s,
+            criteria_name: c?.name,
+            criteria_description: c?.description,
+            max_score: c?.max_score,
+            weight: c?.weight,
+            sort_order: c?.sort_order,
+          };
+        }).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
       }
       evaluation.scores = scores;
       return res.json({ evaluation, isExisting: true });
@@ -508,18 +524,23 @@ router.post('/', authenticate, requireAny, async (req, res) => {
         [evaluation.id]
       );
     } catch (pgErr) {
-      const { data } = await supabaseAdmin
+      const { data: criteriaList } = await supabaseAdmin.from('scoring_criteria').select('*').order('sort_order');
+      const critMap = new Map((criteriaList || []).map(c => [c.id, c]));
+      const { data: supaScores } = await supabaseAdmin
         .from('evaluation_scores')
-        .select('*, scoring_criteria(*)')
+        .select('*')
         .eq('evaluation_id', evaluation.id);
-      scores = (data || []).map(s => ({
-        ...s,
-        criteria_name: s.scoring_criteria?.name,
-        criteria_description: s.scoring_criteria?.description,
-        max_score: s.scoring_criteria?.max_score,
-        weight: s.scoring_criteria?.weight,
-        sort_order: s.scoring_criteria?.sort_order,
-      })).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+      scores = (supaScores || []).map(s => {
+        const c = critMap.get(s.criteria_id || s.criterion_id);
+        return {
+          ...s,
+          criteria_name: c?.name,
+          criteria_description: c?.description,
+          max_score: c?.max_score,
+          weight: c?.weight,
+          sort_order: c?.sort_order,
+        };
+      }).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
     }
     evaluation.scores = scores;
 

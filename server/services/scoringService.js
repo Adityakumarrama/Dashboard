@@ -216,15 +216,16 @@ export async function saveEvaluationScores(evaluationId, scores, comments, user)
     // Recalculate totals
     const { data: allScores } = await supabaseAdmin
       .from('evaluation_scores')
-      .select('*, scoring_criteria(*)')
+      .select('*')
       .eq('evaluation_id', evaluationId);
 
-    const validScores = (allScores || []).filter(s => s.score !== null);
+    const validScores = (allScores || []).filter(s => s.score !== null && s.score !== undefined);
     const totalScore = validScores.reduce((sum, s) => sum + Number(s.score), 0);
     const sumMax = (criteriaList || []).reduce((sum, c) => sum + Number(c.max_score), 0);
     const sumWeight = (criteriaList || []).reduce((sum, c) => sum + Number(c.weight), 0);
     const weightedSum = validScores.reduce((sum, s) => {
-      const w = s.scoring_criteria ? Number(s.scoring_criteria.weight) : 1;
+      const c = criteriaMap.get(s.criteria_id || s.criterion_id);
+      const w = c ? Number(c.weight) : 1;
       return sum + (Number(s.score) * w);
     }, 0);
 
@@ -246,14 +247,17 @@ export async function saveEvaluationScores(evaluationId, scores, comments, user)
 
     if (updateErr) throw updateErr;
 
-    const formattedScores = (allScores || []).map(s => ({
-      ...s,
-      criteria_name: s.scoring_criteria?.name,
-      criteria_description: s.scoring_criteria?.description,
-      max_score: s.scoring_criteria?.max_score,
-      weight: s.scoring_criteria?.weight,
-      sort_order: s.scoring_criteria?.sort_order,
-    }));
+    const formattedScores = (allScores || []).map(s => {
+      const c = criteriaMap.get(s.criteria_id || s.criterion_id);
+      return {
+        ...s,
+        criteria_name: c?.name,
+        criteria_description: c?.description,
+        max_score: c?.max_score,
+        weight: c?.weight,
+        sort_order: c?.sort_order,
+      };
+    }).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
 
     return {
       ...updatedEval,
@@ -406,10 +410,39 @@ export async function submitEvaluation(evaluationId, user, reqIp) {
       throw e;
     }
 
+    // 1. Fetch criteria and scores to compute authoritative totals
+    const { data: criteriaList } = await supabaseAdmin
+      .from('scoring_criteria')
+      .select('*')
+      .eq('is_active', true)
+      .order('sort_order');
+    const criteriaMap = new Map((criteriaList || []).map(c => [c.id, c]));
+
+    const { data: allScores } = await supabaseAdmin
+      .from('evaluation_scores')
+      .select('*')
+      .eq('evaluation_id', evaluationId);
+
+    const validScores = (allScores || []).filter(s => s.score !== null && s.score !== undefined);
+    const totalScore = validScores.reduce((sum, s) => sum + Number(s.score), 0);
+    const sumMax = (criteriaList || []).reduce((sum, c) => sum + Number(c.max_score), 0);
+    const sumWeight = (criteriaList || []).reduce((sum, c) => sum + Number(c.weight), 0);
+    const weightedSum = validScores.reduce((sum, s) => {
+      const c = criteriaMap.get(s.criteria_id || s.criterion_id);
+      const w = c ? Number(c.weight) : 1;
+      return sum + (Number(s.score) * w);
+    }, 0);
+
+    const weightedScore = sumWeight > 0 ? Number((weightedSum / sumWeight).toFixed(2)) : 0;
+    const normalizedScore = sumMax > 0 ? Number(((totalScore / sumMax) * 100).toFixed(4)) : 0;
+
     const { data: submittedEval, error: subErr } = await supabaseAdmin
       .from('evaluations')
       .update({
         status: 'submitted',
+        total_score: totalScore,
+        weighted_score: weightedScore,
+        normalized_score: normalizedScore,
         submitted_at: new Date().toISOString(),
         locked_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -420,20 +453,27 @@ export async function submitEvaluation(evaluationId, user, reqIp) {
 
     if (subErr) throw subErr;
 
-    const { data: scores } = await supabaseAdmin
-      .from('evaluation_scores')
-      .select('*, scoring_criteria(*)')
-      .eq('evaluation_id', evaluationId);
+    const formattedScores = (allScores || []).map(s => {
+      const c = criteriaMap.get(s.criteria_id || s.criterion_id);
+      return {
+        ...s,
+        criteria_name: c?.name,
+        criteria_description: c?.description,
+        max_score: c?.max_score,
+        weight: c?.weight,
+        sort_order: c?.sort_order,
+      };
+    }).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
 
     await supabaseAdmin.from('evaluation_score_history').insert({
       evaluation_id: evaluationId,
       team_id: evaluation.team_id,
       judge_id: evaluation.user_id,
       status: 'submitted',
-      total_score: submittedEval.total_score,
-      weighted_score: submittedEval.weighted_score,
-      normalized_score: submittedEval.normalized_score,
-      scores_snapshot: scores || [],
+      total_score: totalScore,
+      weighted_score: weightedScore,
+      normalized_score: normalizedScore,
+      scores_snapshot: formattedScores,
       action: 'submitted',
       changed_by: user.id,
       reason: 'Final submission by judge',
@@ -441,11 +481,11 @@ export async function submitEvaluation(evaluationId, user, reqIp) {
 
     try {
       await logAction(user.id, 'evaluation.submitted', 'evaluation', evaluationId,
-        { team_code: evaluation.teams?.team_code, total_score: submittedEval.total_score }, reqIp);
+        { team_code: evaluation.teams?.team_code, total_score: totalScore }, reqIp);
     } catch {}
 
     const teamStats = await getTeamScores(evaluation.team_id);
-    submittedEval.scores = scores || [];
+    submittedEval.scores = formattedScores;
 
     return {
       evaluation: submittedEval,

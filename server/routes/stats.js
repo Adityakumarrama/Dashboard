@@ -74,26 +74,67 @@ router.get('/admin', authenticate, requireAdmin, async (req, res) => {
     } catch (pgErr) {
       console.warn('Postgres query failed in /api/stats/admin, falling back to Supabase REST client:', pgErr.message);
 
-      const [teamsRes, juryRes, usersRes] = await Promise.all([
-        supabaseAdmin.from('teams').select('id', { count: 'exact', head: true }),
-        supabaseAdmin.from('users').select('id', { count: 'exact', head: true }).eq('role', 'JURY'),
-        supabaseAdmin.from('users').select('id', { count: 'exact', head: true }),
+      const [teamsRes, juryRes, usersRes, assignmentsRes, evalsRes, auditRes] = await Promise.all([
+        supabaseAdmin.from('teams').select('id, team_code, team_name, category, track, created_at', { count: 'exact' }).order('created_at', { ascending: false }),
+        supabaseAdmin.from('users').select('id, full_name, judge_id, email, status', { count: 'exact' }).eq('role', 'JURY').eq('status', 'active'),
+        supabaseAdmin.from('users').select('id', { count: 'exact', head: true }).eq('status', 'active'),
+        supabaseAdmin.from('jury_assignments').select('id, user_id, team_id', { count: 'exact' }),
+        supabaseAdmin.from('evaluations').select('id, team_id, user_id, status, total_score, submitted_at', { count: 'exact' }),
+        supabaseAdmin.from('audit_logs').select('action, entity_type, created_at, user_id, details').order('created_at', { ascending: false }).limit(10),
       ]);
+
+      const totalTeams = teamsRes.count || 0;
+      const totalJury = juryRes.count || 0;
+      const totalUsers = usersRes.count || 0;
+      const totalRequired = assignmentsRes.count || 0;
+
+      const allEvals = evalsRes.data || [];
+      const submittedEvals = allEvals.filter(e => e.status === 'submitted');
+      const totalSubmitted = submittedEvals.length;
+      const totalPending = Math.max(totalRequired - totalSubmitted, 0);
+      const completionPercent = totalRequired > 0 ? parseFloat(((totalSubmitted / totalRequired) * 100).toFixed(1)) : 0;
+
+      const submittedScores = submittedEvals.map(e => Number(e.total_score) || 0).filter(s => s > 0);
+      const averageScore = submittedScores.length > 0
+        ? parseFloat((submittedScores.reduce((a, b) => a + b, 0) / submittedScores.length).toFixed(1))
+        : 0;
+
+      // Calculate juryProgress accurately for each active jury member
+      const assignments = assignmentsRes.data || [];
+      const juries = juryRes.data || [];
+      const juryProgress = juries.map(j => {
+        const userAssignments = assignments.filter(a => a.user_id === j.id);
+        const userEvals = allEvals.filter(e => e.user_id === j.id && e.status === 'submitted');
+        const assigned = userAssignments.length;
+        const completed = userEvals.length;
+        const pending = Math.max(assigned - completed, 0);
+        const progress = assigned > 0 ? parseFloat(((completed / assigned) * 100).toFixed(1)) : 0;
+        return {
+          id: j.id,
+          full_name: j.full_name,
+          judge_id: j.judge_id,
+          assigned,
+          completed,
+          pending,
+          progress,
+          last_activity: null,
+        };
+      });
 
       return res.json({
         kpi: {
-          totalTeams: teamsRes.count || 0,
-          totalJury: juryRes.count || 0,
-          totalUsers: usersRes.count || 0,
-          evaluationsRequired: 0,
-          evaluationsSubmitted: 0,
-          evaluationsPending: 0,
-          completionPercent: 0,
-          averageScore: 0,
+          totalTeams,
+          totalJury,
+          totalUsers,
+          evaluationsRequired: totalRequired,
+          evaluationsSubmitted: totalSubmitted,
+          evaluationsPending: totalPending,
+          completionPercent,
+          averageScore,
         },
-        recentActivity: [],
-        juryProgress: [],
-        recentTeams: [],
+        recentActivity: auditRes.data || [],
+        juryProgress,
+        recentTeams: (teamsRes.data || []).slice(0, 5),
       });
     }
   } catch (error) {
