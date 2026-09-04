@@ -14,16 +14,7 @@ const ALLOWED_EXTENSIONS = ['.csv', '.xml', '.pdf'];
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname).toLowerCase();
-    cb(null, `import-${uniqueSuffix}${ext}`);
-  },
-});
+const storage = multer.memoryStorage();
 
 function fileFilter(req, file, cb) {
   const ext = path.extname(file.originalname).toLowerCase();

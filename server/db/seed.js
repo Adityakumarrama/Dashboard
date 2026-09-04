@@ -39,24 +39,15 @@ async function seed() {
   const client = await pool.connect();
 
   try {
-    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS password TEXT;');
-
-    const adminEmail = 'SIHadmin6388@sih.gov.in';
-    const adminPass = 'Aditya6388@';
-    const adminUsername = 'SIHadmin6388@sih';
-
-    const authId = await findOrCreateAuthUser(adminEmail, adminPass);
-
     await client.query(
-      `INSERT INTO users (auth_id, username, email, password, full_name, role, status)
-       VALUES ($1, $2, $3, $4, 'SIH Administrator', 'ADMIN', 'active')
+      `INSERT INTO users (auth_id, username, email, full_name, role, status)
+       VALUES ($1, $2, $3, 'SIH Administrator', 'ADMIN', 'active')
        ON CONFLICT (email) DO UPDATE SET
          auth_id = EXCLUDED.auth_id,
          username = EXCLUDED.username,
-         password = EXCLUDED.password,
          role = 'ADMIN',
          status = 'active'`,
-      [authId, adminUsername, adminEmail, adminPass]
+      [authId, adminUsername, adminEmail]
     );
 
     console.log('============================================================');

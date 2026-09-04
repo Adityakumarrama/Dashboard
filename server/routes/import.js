@@ -67,9 +67,11 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
       return res.status(400).json({ error: 'No file uploaded', code: 'NO_FILE' });
     }
 
-    const filePath = req.file.path;
     const ext = path.extname(req.file.originalname).toLowerCase();
-    const fileContent = fs.readFileSync(filePath);
+    const fileContent = req.file.buffer || (req.file.path ? fs.readFileSync(req.file.path) : null);
+    if (!fileContent) {
+      return res.status(400).json({ error: 'File content is empty', code: 'EMPTY_FILE' });
+    }
 
     let records = [];
     let detectedHeaders = [];
@@ -172,8 +174,10 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
       }
     });
 
-    // Clean up the uploaded file
-    try { fs.unlinkSync(filePath); } catch {}
+    // Clean up the uploaded file if on disk
+    if (req.file.path) {
+      try { fs.unlinkSync(req.file.path); } catch {}
+    }
 
     res.json({
       file: {

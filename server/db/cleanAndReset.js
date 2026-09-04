@@ -74,12 +74,12 @@ async function cleanAndReset() {
     const authId = newAuthData.user.id;
     console.log(`   ✓ Created Supabase Auth user: ${adminEmail} (Auth ID: ${authId})`);
 
-    // 5. Insert the Single Admin into the users table with password saved
+    // 5. Insert the Single Admin into the users table
     const userRes = await client.query(
-      `INSERT INTO users (auth_id, username, email, password, full_name, role, status)
-       VALUES ($1, $2, $3, $4, $5, 'ADMIN', 'active')
+      `INSERT INTO users (auth_id, username, email, full_name, role, status)
+       VALUES ($1, $2, $3, $4, 'ADMIN', 'active')
        RETURNING id, username, email, full_name, role, status, created_at`,
-      [authId, adminUsername, adminEmail, adminPassword, 'SIH Administrator']
+      [authId, adminUsername, adminEmail, 'SIH Administrator']
     );
 
     console.log('\n============================================================');

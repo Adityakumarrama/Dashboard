@@ -122,16 +122,19 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
       email_confirm: true,
     });
 
-    if (authError) {
-      return res.status(400).json({ error: `Auth error: ${authError.message}`, code: 'AUTH_ERROR' });
+    if (authError || !authData?.user) {
+      return res.status(400).json({
+        error: `Auth error: ${authError?.message || 'Failed to create auth user in Supabase'}`,
+        code: 'AUTH_ERROR',
+      });
     }
 
     // Create in our users table
     const user = await queryOne(
-      `INSERT INTO users (auth_id, username, email, password, full_name, role, judge_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO users (auth_id, username, email, full_name, role, judge_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, username, email, full_name, role, judge_id, status, created_at`,
-      [authData.user.id, sanitize(username), email.toLowerCase(), password, sanitize(full_name), role, judge_id || null]
+      [authData.user.id, sanitize(username), email.toLowerCase(), sanitize(full_name), role, judge_id || null]
     );
 
     if (req.user?.id) {
