@@ -1,21 +1,46 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import api from '../../lib/api';
-import { formatTimeAgo, getStatusClass } from '../../lib/utils';
+import { getStatusClass } from '../../lib/utils';
 
 export default function JuryDashboard() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [filter, setFilter] = useState('all'); // 'all' | 'pending' | 'completed'
   const navigate = useNavigate();
 
-  useEffect(() => {
-    api.get('/stats/jury')
-      .then(data => {
-        setStats(data);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
+  const fetchStats = useCallback(async (isManual = false) => {
+    if (isManual) setRefreshing(true);
+    try {
+      const data = await api.get('/stats/jury');
+      setStats(data);
+    } catch (err) {
+      console.error('Failed to load jury stats:', err);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchStats();
+    const timer = setInterval(() => fetchStats(), 15000);
+    return () => clearInterval(timer);
+  }, [fetchStats]);
+
+  const kpi = stats?.kpi || { assigned: 0, completed: 0, pending: 0, progress: 0 };
+  const allTeams = stats?.teams || [];
+
+  const filteredTeams = useMemo(() => {
+    if (filter === 'pending') {
+      return allTeams.filter(t => t.eval_status !== 'submitted');
+    }
+    if (filter === 'completed') {
+      return allTeams.filter(t => t.eval_status === 'submitted');
+    }
+    return allTeams;
+  }, [allTeams, filter]);
 
   if (loading) {
     return (
@@ -30,9 +55,6 @@ export default function JuryDashboard() {
     );
   }
 
-  const kpi = stats?.kpi || { assigned: 0, completed: 0, pending: 0, progress: 0 };
-  const teams = stats?.teams || [];
-
   return (
     <div>
       <div className="page-header">
@@ -40,7 +62,14 @@ export default function JuryDashboard() {
           <h1 className="page-title">Jury Evaluation Dashboard</h1>
           <p className="page-subtitle">Track and evaluate your assigned teams</p>
         </div>
-        <div className="page-actions">
+        <div className="page-actions" style={{ display: 'flex', gap: 'var(--space-2)' }}>
+          <button
+            className="btn btn-secondary"
+            onClick={() => fetchStats(true)}
+            disabled={refreshing}
+          >
+            {refreshing ? '⏳ Refreshing...' : '🔄 Refresh'}
+          </button>
           <Link to="/jury/search" className="btn btn-primary">
             🔍 Lookup Team by Code
           </Link>
@@ -87,9 +116,32 @@ export default function JuryDashboard() {
 
       {/* Assigned Teams Table */}
       <div className="card">
-        <div className="dashboard-section-title">
-          <span>👥 Assigned Teams Queue</span>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
+          <div className="dashboard-section-title" style={{ margin: 0 }}>
+            <span>👥 Assigned Teams Queue</span>
+          </div>
+          <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+            <button
+              className={`btn btn-sm ${filter === 'all' ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => setFilter('all')}
+            >
+              All ({allTeams.length})
+            </button>
+            <button
+              className={`btn btn-sm ${filter === 'pending' ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => setFilter('pending')}
+            >
+              Pending ({allTeams.filter(t => t.eval_status !== 'submitted').length})
+            </button>
+            <button
+              className={`btn btn-sm ${filter === 'completed' ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => setFilter('completed')}
+            >
+              Completed ({allTeams.filter(t => t.eval_status === 'submitted').length})
+            </button>
+          </div>
         </div>
+
         <div className="table-container">
           <table className="table">
             <thead>
@@ -104,16 +156,20 @@ export default function JuryDashboard() {
               </tr>
             </thead>
             <tbody>
-              {teams.length === 0 ? (
+              {filteredTeams.length === 0 ? (
                 <tr>
                   <td colSpan="7" className="empty-state">
                     <div className="empty-state-icon">📋</div>
-                    <div className="empty-state-title">No teams assigned yet</div>
-                    <div className="empty-state-text">You will see teams here once the administrator assigns them to you.</div>
+                    <div className="empty-state-title">No teams in this queue</div>
+                    <div className="empty-state-text">
+                      {filter === 'completed'
+                        ? 'No teams evaluated yet. Complete evaluations to see them here.'
+                        : 'All assigned teams have been evaluated!'}
+                    </div>
                   </td>
                 </tr>
               ) : (
-                teams.map(team => (
+                filteredTeams.map(team => (
                   <tr key={team.id}>
                     <td>
                       <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--color-accent)' }}>
@@ -128,7 +184,15 @@ export default function JuryDashboard() {
                         {team.eval_status === 'not_started' ? 'Not Started' : team.eval_status}
                       </span>
                     </td>
-                    <td><strong>{team.total_score !== null && team.total_score !== undefined ? team.total_score : '—'}</strong></td>
+                    <td>
+                      {team.total_score !== null && team.total_score !== undefined ? (
+                        <span className="badge badge-success" style={{ fontWeight: 700, fontSize: 'var(--text-sm)' }}>
+                          {team.total_score} PTS
+                        </span>
+                      ) : (
+                        <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+                      )}
+                    </td>
                     <td>
                       <button
                         className={`btn btn-sm ${team.eval_status === 'submitted' ? 'btn-secondary' : 'btn-primary'}`}

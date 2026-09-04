@@ -19,6 +19,7 @@ class ApiClient {
     };
 
     const config = {
+      cache: 'no-cache',
       ...options,
       headers,
     };
@@ -94,6 +95,7 @@ class ApiClient {
         searchParams.set(key, value);
       }
     }
+    searchParams.set('_t', Date.now().toString());
     const qs = searchParams.toString();
     return this.request(`${endpoint}${qs ? '?' + qs : ''}`);
   }

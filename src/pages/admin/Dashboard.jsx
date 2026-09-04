@@ -6,12 +6,25 @@ import { formatDateTime, formatTimeAgo, getStatusClass } from '../../lib/utils';
 export default function AdminDashboard() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchStats = async (isManual = false) => {
+    if (isManual) setRefreshing(true);
+    try {
+      const data = await api.get('/stats/admin');
+      setStats(data);
+    } catch (err) {
+      console.error('Failed to load admin stats:', err);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
 
   useEffect(() => {
-    api.get('/stats/admin').then(data => {
-      setStats(data);
-      setLoading(false);
-    }).catch(() => setLoading(false));
+    fetchStats();
+    const timer = setInterval(() => fetchStats(), 15000);
+    return () => clearInterval(timer);
   }, []);
 
   if (loading) {
@@ -46,6 +59,15 @@ export default function AdminDashboard() {
         <div>
           <h1 className="page-title">Dashboard</h1>
           <p className="page-subtitle">Overview of judging activity</p>
+        </div>
+        <div className="page-actions">
+          <button
+            className="btn btn-secondary"
+            onClick={() => fetchStats(true)}
+            disabled={refreshing}
+          >
+            {refreshing ? '⏳ Refreshing...' : '🔄 Refresh'}
+          </button>
         </div>
       </div>
 
