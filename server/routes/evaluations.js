@@ -4,6 +4,7 @@ import { requireAdmin, requireAny } from '../middleware/rbac.js';
 import { query, queryOne, queryAll } from '../config/database.js';
 import { buildPaginationQuery, paginationMeta } from '../utils/helpers.js';
 import { logAction, getClientIp } from '../services/auditService.js';
+import supabaseAdmin from '../config/supabase.js';
 import {
   saveEvaluationScores,
   submitEvaluation,
@@ -37,7 +38,7 @@ router.get('/leaderboard', authenticate, requireAny, async (req, res) => {
     });
   } catch (error) {
     console.error('Leaderboard error:', error);
-    res.status(500).json({ error: 'Failed to fetch authoritative leaderboard', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to fetch authoritative leaderboard', code: 'INTERNAL_ERROR' });
   }
 });
 
@@ -78,30 +79,71 @@ router.get('/', authenticate, requireAny, async (req, res) => {
 
     const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
 
-    const countResult = await queryOne(
-      `SELECT COUNT(*) as count FROM evaluations e ${whereClause}`, params
-    );
-    const total = parseInt(countResult.count);
+    try {
+      const countResult = await queryOne(
+        `SELECT COUNT(*) as count FROM evaluations e ${whereClause}`, params
+      );
+      const total = parseInt(countResult.count);
 
-    const evaluations = await queryAll(
-      `SELECT e.*, t.team_code, t.team_name, t.organization, t.category,
-        u.full_name as judge_name, u.judge_id
-       FROM evaluations e
-       JOIN teams t ON e.team_id = t.id
-       JOIN users u ON e.user_id = u.id
-       ${whereClause}
-       ORDER BY e.updated_at DESC
-       LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
-      [...params, safeLimit, offset]
-    );
+      const evaluations = await queryAll(
+        `SELECT e.*, t.team_code, t.team_name, t.organization, t.category,
+          u.full_name as judge_name, u.judge_id
+         FROM evaluations e
+         JOIN teams t ON e.team_id = t.id
+         JOIN users u ON e.user_id = u.id
+         ${whereClause}
+         ORDER BY e.updated_at DESC
+         LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+        [...params, safeLimit, offset]
+      );
 
-    res.json({
-      evaluations,
-      pagination: paginationMeta(total, safePage, safeLimit),
-    });
+      return res.json({
+        evaluations,
+        pagination: paginationMeta(total, safePage, safeLimit),
+      });
+    } catch (pgErr) {
+      console.warn('Postgres query failed in GET /api/evaluations, falling back to Supabase REST:', pgErr.message);
+      let queryBuilder = supabaseAdmin
+        .from('evaluations')
+        .select('*, teams(team_code, team_name, organization, category), users(full_name, judge_id)', { count: 'exact' });
+
+      if (req.user.role === 'JURY') {
+        queryBuilder = queryBuilder.eq('user_id', req.user.id);
+      } else if (user_id) {
+        queryBuilder = queryBuilder.eq('user_id', user_id);
+      }
+      if (status) {
+        queryBuilder = queryBuilder.eq('status', status);
+      }
+      if (team_id) {
+        queryBuilder = queryBuilder.eq('team_id', team_id);
+      }
+
+      queryBuilder = queryBuilder
+        .order('updated_at', { ascending: false })
+        .range(offset, offset + safeLimit - 1);
+
+      const { data, count, error: supaErr } = await queryBuilder;
+      if (supaErr) throw supaErr;
+
+      const evaluations = (data || []).map(e => ({
+        ...e,
+        team_code: e.teams?.team_code,
+        team_name: e.teams?.team_name,
+        organization: e.teams?.organization,
+        category: e.teams?.category,
+        judge_name: e.users?.full_name,
+        judge_id: e.users?.judge_id,
+      }));
+
+      return res.json({
+        evaluations,
+        pagination: paginationMeta(count || 0, safePage, safeLimit),
+      });
+    }
   } catch (error) {
     console.error('List evaluations error:', error);
-    res.status(500).json({ error: 'Failed to list evaluations', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to list evaluations', code: 'INTERNAL_ERROR' });
   }
 });
 
@@ -112,48 +154,97 @@ router.get('/', authenticate, requireAny, async (req, res) => {
  */
 router.get('/team/:teamId', authenticate, requireAdmin, async (req, res) => {
   try {
-    const team = await queryOne('SELECT * FROM teams WHERE id = $1', [req.params.teamId]);
+    let team = null;
+    try {
+      team = await queryOne('SELECT * FROM teams WHERE id = $1', [req.params.teamId]);
+    } catch {
+      const { data } = await supabaseAdmin.from('teams').select('*').eq('id', req.params.teamId).maybeSingle();
+      team = data;
+    }
+
     if (!team) {
       return res.status(404).json({ error: 'Team not found', code: 'NOT_FOUND' });
     }
 
-    const evaluations = await queryAll(
-      `SELECT e.*, u.full_name as judge_name, u.judge_id
-       FROM evaluations e
-       JOIN users u ON e.user_id = u.id
-       WHERE e.team_id = $1
-       ORDER BY e.submitted_at DESC NULLS LAST`,
-      [req.params.teamId]
-    );
-
-    // Get scores for each evaluation
-    for (const eval_ of evaluations) {
-      eval_.scores = await queryAll(
-        `SELECT es.*, sc.name as criteria_name, sc.max_score, sc.weight, sc.sort_order
-         FROM evaluation_scores es
-         JOIN scoring_criteria sc ON (COALESCE(es.criteria_id, es.criterion_id) = sc.id)
-         WHERE es.evaluation_id = $1
-         ORDER BY sc.sort_order`,
-        [eval_.id]
+    let evaluations = [];
+    try {
+      evaluations = await queryAll(
+        `SELECT e.*, u.full_name as judge_name, u.judge_id
+         FROM evaluations e
+         JOIN users u ON e.user_id = u.id
+         WHERE e.team_id = $1
+         ORDER BY e.submitted_at DESC NULLS LAST`,
+        [req.params.teamId]
       );
+
+      for (const eval_ of evaluations) {
+        eval_.scores = await queryAll(
+          `SELECT es.*, sc.name as criteria_name, sc.max_score, sc.weight, sc.sort_order
+           FROM evaluation_scores es
+           JOIN scoring_criteria sc ON (COALESCE(es.criteria_id, es.criterion_id) = sc.id)
+           WHERE es.evaluation_id = $1
+           ORDER BY sc.sort_order`,
+          [eval_.id]
+        );
+      }
+    } catch (pgErr) {
+      console.warn('Postgres query failed in GET /team/:teamId, falling back to Supabase REST:', pgErr.message);
+      const { data: supaEvals } = await supabaseAdmin
+        .from('evaluations')
+        .select('*, users(full_name, judge_id)')
+        .eq('team_id', req.params.teamId)
+        .order('submitted_at', { ascending: false });
+
+      evaluations = (supaEvals || []).map(e => ({
+        ...e,
+        judge_name: e.users?.full_name,
+        judge_id: e.users?.judge_id,
+      }));
+
+      for (const eval_ of evaluations) {
+        const { data: supaScores } = await supabaseAdmin
+          .from('evaluation_scores')
+          .select('*, scoring_criteria(*)')
+          .eq('evaluation_id', eval_.id);
+        eval_.scores = (supaScores || []).map(s => ({
+          ...s,
+          criteria_name: s.scoring_criteria?.name,
+          max_score: s.scoring_criteria?.max_score,
+          weight: s.scoring_criteria?.weight,
+          sort_order: s.scoring_criteria?.sort_order,
+        })).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+      }
     }
 
-    // Authoritative PostgreSQL statistics
-    const teamAgg = await getTeamScores(team.id);
-
-    const stats = {
-      totalJudges: evaluations.length,
-      completedJudges: parseInt(teamAgg?.completed_judges || 0),
-      averageScore: teamAgg?.aggregate_score !== null && teamAgg?.aggregate_score !== undefined ? parseFloat(teamAgg.aggregate_score).toFixed(2) : null,
-      weightedAverageScore: teamAgg?.weighted_aggregate_score !== null && teamAgg?.weighted_aggregate_score !== undefined ? parseFloat(teamAgg.weighted_aggregate_score).toFixed(2) : null,
-      highestScore: teamAgg?.highest_score !== null && teamAgg?.highest_score !== undefined ? parseFloat(teamAgg.highest_score).toFixed(2) : null,
-      lowestScore: teamAgg?.lowest_score !== null && teamAgg?.lowest_score !== undefined ? parseFloat(teamAgg.lowest_score).toFixed(2) : null,
-    };
+    // Authoritative PostgreSQL statistics with fallback
+    let stats = null;
+    try {
+      const teamAgg = await getTeamScores(team.id);
+      stats = {
+        totalJudges: evaluations.length,
+        completedJudges: parseInt(teamAgg?.completed_judges || 0),
+        averageScore: teamAgg?.aggregate_score !== null && teamAgg?.aggregate_score !== undefined ? parseFloat(teamAgg.aggregate_score).toFixed(2) : null,
+        weightedAverageScore: teamAgg?.weighted_aggregate_score !== null && teamAgg?.weighted_aggregate_score !== undefined ? parseFloat(teamAgg.weighted_aggregate_score).toFixed(2) : null,
+        highestScore: teamAgg?.highest_score !== null && teamAgg?.highest_score !== undefined ? parseFloat(teamAgg.highest_score).toFixed(2) : null,
+        lowestScore: teamAgg?.lowest_score !== null && teamAgg?.lowest_score !== undefined ? parseFloat(teamAgg.lowest_score).toFixed(2) : null,
+      };
+    } catch {
+      const completed = evaluations.filter(e => e.status === 'submitted');
+      const scores = completed.map(e => parseFloat(e.total_score)).filter(s => !isNaN(s));
+      stats = {
+        totalJudges: evaluations.length,
+        completedJudges: completed.length,
+        averageScore: scores.length > 0 ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(2) : null,
+        weightedAverageScore: null,
+        highestScore: scores.length > 0 ? Math.max(...scores).toFixed(2) : null,
+        lowestScore: scores.length > 0 ? Math.min(...scores).toFixed(2) : null,
+      };
+    }
 
     res.json({ team, evaluations, stats });
   } catch (error) {
     console.error('Get team evaluations error:', error);
-    res.status(500).json({ error: 'Failed to get evaluations', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to get evaluations', code: 'INTERNAL_ERROR' });
   }
 });
 
@@ -162,16 +253,42 @@ router.get('/team/:teamId', authenticate, requireAdmin, async (req, res) => {
  */
 router.get('/:id', authenticate, requireAny, async (req, res) => {
   try {
-    const evaluation = await queryOne(
-      `SELECT e.*, t.team_code, t.team_name, t.problem_statement_id, t.problem_statement_title,
-        t.organization, t.category, t.track, t.team_leader, t.team_members,
-        u.full_name as judge_name, u.judge_id
-       FROM evaluations e
-       JOIN teams t ON e.team_id = t.id
-       JOIN users u ON e.user_id = u.id
-       WHERE e.id = $1`,
-      [req.params.id]
-    );
+    let evaluation = null;
+    try {
+      evaluation = await queryOne(
+        `SELECT e.*, t.team_code, t.team_name, t.problem_statement_id, t.problem_statement_title,
+          t.organization, t.category, t.track, t.team_leader, t.team_members,
+          u.full_name as judge_name, u.judge_id
+         FROM evaluations e
+         JOIN teams t ON e.team_id = t.id
+         JOIN users u ON e.user_id = u.id
+         WHERE e.id = $1`,
+        [req.params.id]
+      );
+    } catch (pgErr) {
+      console.warn('Postgres query failed in GET /api/evaluations/:id, falling back to Supabase REST:', pgErr.message);
+      const { data } = await supabaseAdmin
+        .from('evaluations')
+        .select('*, teams(*), users(full_name, judge_id)')
+        .eq('id', req.params.id)
+        .maybeSingle();
+      if (data) {
+        evaluation = {
+          ...data,
+          team_code: data.teams?.team_code,
+          team_name: data.teams?.team_name,
+          problem_statement_id: data.teams?.problem_statement_id,
+          problem_statement_title: data.teams?.problem_statement_title,
+          organization: data.teams?.organization,
+          category: data.teams?.category,
+          track: data.teams?.track,
+          team_leader: data.teams?.team_leader,
+          team_members: data.teams?.team_members,
+          judge_name: data.users?.full_name,
+          judge_id: data.users?.judge_id,
+        };
+      }
+    }
 
     if (!evaluation) {
       return res.status(404).json({ error: 'Evaluation not found', code: 'NOT_FOUND' });
@@ -182,21 +299,38 @@ router.get('/:id', authenticate, requireAny, async (req, res) => {
       return res.status(403).json({ error: 'Access denied', code: 'FORBIDDEN' });
     }
 
-    const scores = await queryAll(
-      `SELECT es.*, sc.name as criteria_name, sc.description as criteria_description,
-        sc.max_score, sc.weight, sc.sort_order
-       FROM evaluation_scores es
-       JOIN scoring_criteria sc ON (COALESCE(es.criteria_id, es.criterion_id) = sc.id)
-       WHERE es.evaluation_id = $1
-       ORDER BY sc.sort_order`,
-      [req.params.id]
-    );
+    let scores = [];
+    try {
+      scores = await queryAll(
+        `SELECT es.*, sc.name as criteria_name, sc.description as criteria_description,
+          sc.max_score, sc.weight, sc.sort_order
+         FROM evaluation_scores es
+         JOIN scoring_criteria sc ON (COALESCE(es.criteria_id, es.criterion_id) = sc.id)
+         WHERE es.evaluation_id = $1
+         ORDER BY sc.sort_order`,
+        [req.params.id]
+      );
+    } catch (pgErr) {
+      console.warn('Postgres query failed for evaluation scores, falling back to Supabase REST:', pgErr.message);
+      const { data } = await supabaseAdmin
+        .from('evaluation_scores')
+        .select('*, scoring_criteria(*)')
+        .eq('evaluation_id', req.params.id);
+      scores = (data || []).map(s => ({
+        ...s,
+        criteria_name: s.scoring_criteria?.name,
+        criteria_description: s.scoring_criteria?.description,
+        max_score: s.scoring_criteria?.max_score,
+        weight: s.scoring_criteria?.weight,
+        sort_order: s.scoring_criteria?.sort_order,
+      })).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    }
 
     evaluation.scores = scores;
     res.json({ evaluation });
   } catch (error) {
     console.error('Get evaluation error:', error);
-    res.status(500).json({ error: 'Failed to get evaluation', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to get evaluation', code: 'INTERNAL_ERROR' });
   }
 });
 
@@ -214,31 +348,141 @@ router.post('/', authenticate, requireAny, async (req, res) => {
     }
 
     // Verify team exists
-    const team = await queryOne('SELECT * FROM teams WHERE id = $1', [team_id]);
+    let team = null;
+    try {
+      team = await queryOne('SELECT * FROM teams WHERE id = $1', [team_id]);
+    } catch (pgErr) {
+      console.warn('Postgres query failed for team in POST /api/evaluations, falling back to Supabase REST:', pgErr.message);
+      const { data } = await supabaseAdmin.from('teams').select('*').eq('id', team_id).maybeSingle();
+      team = data;
+    }
     if (!team) {
       return res.status(404).json({ error: 'Team not found', code: 'NOT_FOUND' });
     }
 
     // Jury: verify assignment
     if (req.user.role === 'JURY') {
-      const assignment = await queryOne(
-        'SELECT id FROM jury_assignments WHERE user_id = $1 AND team_id = $2',
-        [userId, team_id]
-      );
+      let assignment = null;
+      try {
+        assignment = await queryOne(
+          'SELECT id FROM jury_assignments WHERE user_id = $1 AND team_id = $2',
+          [userId, team_id]
+        );
+      } catch (pgErr) {
+        console.warn('Postgres query failed for assignment check, falling back to Supabase REST:', pgErr.message);
+        const { data } = await supabaseAdmin
+          .from('jury_assignments')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('team_id', team_id)
+          .maybeSingle();
+        assignment = data;
+      }
+
       if (!assignment) {
         return res.status(403).json({ error: 'This team is not assigned to you', code: 'NOT_ASSIGNED' });
       }
     }
 
     // Check for existing evaluation
-    let evaluation = await queryOne(
-      'SELECT * FROM evaluations WHERE team_id = $1 AND user_id = $2',
-      [team_id, userId]
-    );
+    let evaluation = null;
+    try {
+      evaluation = await queryOne(
+        'SELECT * FROM evaluations WHERE team_id = $1 AND user_id = $2',
+        [team_id, userId]
+      );
+    } catch (pgErr) {
+      console.warn('Postgres query failed for existing evaluation check, falling back to Supabase REST:', pgErr.message);
+      const { data } = await supabaseAdmin
+        .from('evaluations')
+        .select('*')
+        .eq('team_id', team_id)
+        .eq('user_id', userId)
+        .maybeSingle();
+      evaluation = data;
+    }
 
     if (evaluation) {
       // Return existing with scores
-      const scores = await queryAll(
+      let scores = [];
+      try {
+        scores = await queryAll(
+          `SELECT es.*, sc.name as criteria_name, sc.description as criteria_description,
+            sc.max_score, sc.weight, sc.sort_order
+           FROM evaluation_scores es
+           JOIN scoring_criteria sc ON (COALESCE(es.criteria_id, es.criterion_id) = sc.id)
+           WHERE es.evaluation_id = $1
+           ORDER BY sc.sort_order`,
+          [evaluation.id]
+        );
+      } catch (pgErr) {
+        const { data } = await supabaseAdmin
+          .from('evaluation_scores')
+          .select('*, scoring_criteria(*)')
+          .eq('evaluation_id', evaluation.id);
+        scores = (data || []).map(s => ({
+          ...s,
+          criteria_name: s.scoring_criteria?.name,
+          criteria_description: s.scoring_criteria?.description,
+          max_score: s.scoring_criteria?.max_score,
+          weight: s.scoring_criteria?.weight,
+          sort_order: s.scoring_criteria?.sort_order,
+        })).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+      }
+      evaluation.scores = scores;
+      return res.json({ evaluation, isExisting: true });
+    }
+
+    // Create new draft
+    try {
+      evaluation = await queryOne(
+        'INSERT INTO evaluations (team_id, user_id, status) VALUES ($1, $2, \'draft\') RETURNING *',
+        [team_id, userId]
+      );
+    } catch (pgErr) {
+      console.warn('Postgres insert failed for evaluation, falling back to Supabase REST:', pgErr.message);
+      const { data, error: supaErr } = await supabaseAdmin
+        .from('evaluations')
+        .insert({ team_id, user_id: userId, status: 'draft' })
+        .select()
+        .single();
+      if (supaErr) throw supaErr;
+      evaluation = data;
+    }
+
+    // Initialize with all active criteria
+    try {
+      const criteria = await queryAll('SELECT id FROM scoring_criteria WHERE is_active = true ORDER BY sort_order');
+      for (const c of criteria) {
+        await query(
+          `INSERT INTO evaluation_scores (evaluation_id, criteria_id, criterion_id, team_id, judge_id)
+           VALUES ($1, $2, $2, $3, $4)
+           ON CONFLICT (evaluation_id, criteria_id) DO NOTHING`,
+          [evaluation.id, c.id, team_id, userId]
+        );
+      }
+    } catch (pgErr) {
+      console.warn('Postgres query failed for criteria init, falling back to Supabase REST:', pgErr.message);
+      const { data: criteriaList } = await supabaseAdmin
+        .from('scoring_criteria')
+        .select('id')
+        .eq('is_active', true)
+        .order('sort_order');
+      for (const c of (criteriaList || [])) {
+        await supabaseAdmin.from('evaluation_scores').upsert({
+          evaluation_id: evaluation.id,
+          criteria_id: c.id,
+          criterion_id: c.id,
+          team_id,
+          judge_id: userId,
+        }, { onConflict: 'evaluation_id,criteria_id' });
+      }
+    }
+
+    // Fetch with full score data
+    let scores = [];
+    try {
+      scores = await queryAll(
         `SELECT es.*, sc.name as criteria_name, sc.description as criteria_description,
           sc.max_score, sc.weight, sc.sort_order
          FROM evaluation_scores es
@@ -247,46 +491,33 @@ router.post('/', authenticate, requireAny, async (req, res) => {
          ORDER BY sc.sort_order`,
         [evaluation.id]
       );
-      evaluation.scores = scores;
-      return res.json({ evaluation, isExisting: true });
+    } catch (pgErr) {
+      const { data } = await supabaseAdmin
+        .from('evaluation_scores')
+        .select('*, scoring_criteria(*)')
+        .eq('evaluation_id', evaluation.id);
+      scores = (data || []).map(s => ({
+        ...s,
+        criteria_name: s.scoring_criteria?.name,
+        criteria_description: s.scoring_criteria?.description,
+        max_score: s.scoring_criteria?.max_score,
+        weight: s.scoring_criteria?.weight,
+        sort_order: s.scoring_criteria?.sort_order,
+      })).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
     }
-
-    // Create new draft
-    evaluation = await queryOne(
-      'INSERT INTO evaluations (team_id, user_id, status) VALUES ($1, $2, \'draft\') RETURNING *',
-      [team_id, userId]
-    );
-
-    // Initialize with all active criteria
-    const criteria = await queryAll('SELECT id FROM scoring_criteria WHERE is_active = true ORDER BY sort_order');
-    for (const c of criteria) {
-      await query(
-        `INSERT INTO evaluation_scores (evaluation_id, criteria_id, criterion_id, team_id, judge_id)
-         VALUES ($1, $2, $2, $3, $4)
-         ON CONFLICT (evaluation_id, criteria_id) DO NOTHING`,
-        [evaluation.id, c.id, team_id, userId]
-      );
-    }
-
-    // Fetch with full score data
-    const scores = await queryAll(
-      `SELECT es.*, sc.name as criteria_name, sc.description as criteria_description,
-        sc.max_score, sc.weight, sc.sort_order
-       FROM evaluation_scores es
-       JOIN scoring_criteria sc ON (COALESCE(es.criteria_id, es.criterion_id) = sc.id)
-       WHERE es.evaluation_id = $1
-       ORDER BY sc.sort_order`,
-      [evaluation.id]
-    );
     evaluation.scores = scores;
 
-    await logAction(userId, 'evaluation.created', 'evaluation', evaluation.id,
-      { team_code: team.team_code }, getClientIp(req));
+    try {
+      await logAction(userId, 'evaluation.created', 'evaluation', evaluation.id,
+        { team_code: team.team_code }, getClientIp(req));
+    } catch (logErr) {
+      console.warn('Audit log error on evaluation creation:', logErr.message);
+    }
 
     res.status(201).json({ evaluation, isExisting: false });
   } catch (error) {
     console.error('Create evaluation error:', error);
-    res.status(500).json({ error: 'Failed to create evaluation', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to create evaluation', code: 'INTERNAL_ERROR' });
   }
 });
 

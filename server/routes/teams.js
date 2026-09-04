@@ -92,7 +92,14 @@ router.get('/lookup/:teamCode', authenticate, requireAny, async (req, res) => {
   try {
     const teamCode = sanitize(req.params.teamCode);
 
-    const team = await queryOne('SELECT * FROM teams WHERE team_code = $1', [teamCode]);
+    let team = null;
+    try {
+      team = await queryOne('SELECT * FROM teams WHERE team_code ILIKE $1', [teamCode]);
+    } catch (pgErr) {
+      console.warn('Postgres query failed in GET /lookup/:teamCode, falling back to Supabase REST:', pgErr.message);
+      const { data } = await supabaseAdmin.from('teams').select('*').ilike('team_code', teamCode).maybeSingle();
+      team = data;
+    }
 
     if (!team) {
       return res.status(404).json({ error: 'Team not found', code: 'TEAM_NOT_FOUND' });
@@ -100,10 +107,23 @@ router.get('/lookup/:teamCode', authenticate, requireAny, async (req, res) => {
 
     // If jury, check assignment
     if (req.user.role === 'JURY') {
-      const assignment = await queryOne(
-        'SELECT id FROM jury_assignments WHERE user_id = $1 AND team_id = $2',
-        [req.user.id, team.id]
-      );
+      let assignment = null;
+      try {
+        assignment = await queryOne(
+          'SELECT id FROM jury_assignments WHERE user_id = $1 AND team_id = $2',
+          [req.user.id, team.id]
+        );
+      } catch (pgErr) {
+        console.warn('Postgres query failed in jury_assignments check, falling back to Supabase REST:', pgErr.message);
+        const { data } = await supabaseAdmin
+          .from('jury_assignments')
+          .select('id')
+          .eq('user_id', req.user.id)
+          .eq('team_id', team.id)
+          .maybeSingle();
+        assignment = data;
+      }
+
       if (!assignment) {
         return res.status(403).json({
           error: 'This team is not assigned to you',
@@ -115,7 +135,7 @@ router.get('/lookup/:teamCode', authenticate, requireAny, async (req, res) => {
     res.json({ team });
   } catch (error) {
     console.error('Team lookup error:', error);
-    res.status(500).json({ error: 'Failed to lookup team', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to lookup team', code: 'INTERNAL_ERROR' });
   }
 });
 
@@ -125,50 +145,86 @@ router.get('/lookup/:teamCode', authenticate, requireAny, async (req, res) => {
  */
 router.get('/:id', authenticate, requireAny, async (req, res) => {
   try {
-    const team = await queryOne('SELECT * FROM teams WHERE id = $1', [req.params.id]);
+    let team = null;
+    try {
+      team = await queryOne('SELECT * FROM teams WHERE id = $1', [req.params.id]);
+    } catch (pgErr) {
+      console.warn('Postgres query failed in GET /teams/:id, falling back to Supabase REST:', pgErr.message);
+      const { data } = await supabaseAdmin.from('teams').select('*').eq('id', req.params.id).maybeSingle();
+      team = data;
+    }
 
     if (!team) {
       return res.status(404).json({ error: 'Team not found', code: 'NOT_FOUND' });
     }
 
     // Get evaluations for this team
-    const evaluations = await queryAll(
-      `SELECT e.*, u.full_name as judge_name, u.judge_id
-       FROM evaluations e
-       JOIN users u ON e.user_id = u.id
-       WHERE e.team_id = $1
-       ORDER BY e.submitted_at DESC NULLS LAST`,
-      [team.id]
-    );
-
-    // Get evaluation scores for submitted evaluations
-    for (const evaluation of evaluations) {
-      const scores = await queryAll(
-        `SELECT es.*, sc.name as criteria_name, sc.max_score, sc.weight
-         FROM evaluation_scores es
-         JOIN scoring_criteria sc ON (COALESCE(es.criteria_id, es.criterion_id) = sc.id)
-         WHERE es.evaluation_id = $1
-         ORDER BY sc.sort_order`,
-        [evaluation.id]
+    let evaluations = [];
+    try {
+      evaluations = await queryAll(
+        `SELECT e.*, u.full_name as judge_name, u.judge_id
+         FROM evaluations e
+         JOIN users u ON e.user_id = u.id
+         WHERE e.team_id = $1
+         ORDER BY e.submitted_at DESC NULLS LAST`,
+        [team.id]
       );
-      evaluation.scores = scores;
+
+      // Get evaluation scores for submitted evaluations
+      for (const evaluation of evaluations) {
+        const scores = await queryAll(
+          `SELECT es.*, sc.name as criteria_name, sc.max_score, sc.weight
+           FROM evaluation_scores es
+           JOIN scoring_criteria sc ON (COALESCE(es.criteria_id, es.criterion_id) = sc.id)
+           WHERE es.evaluation_id = $1
+           ORDER BY sc.sort_order`,
+          [evaluation.id]
+        );
+        evaluation.scores = scores;
+      }
+    } catch (pgErr) {
+      console.warn('Postgres query failed for team evaluations, falling back to Supabase REST:', pgErr.message);
+      const { data: evals } = await supabaseAdmin
+        .from('evaluations')
+        .select('*, users(full_name, judge_id)')
+        .eq('team_id', team.id)
+        .order('submitted_at', { ascending: false });
+      evaluations = (evals || []).map(e => ({
+        ...e,
+        judge_name: e.users?.full_name,
+        judge_id: e.users?.judge_id,
+      }));
     }
 
     // Authoritative team statistics calculated by PostgreSQL view v_team_score_aggregates
-    const teamAgg = await getTeamScores(team.id);
-    const stats = {
-      totalJudges: evaluations.length,
-      completedJudges: parseInt(teamAgg?.completed_judges || 0),
-      averageScore: teamAgg?.aggregate_score !== null && teamAgg?.aggregate_score !== undefined ? parseFloat(teamAgg.aggregate_score).toFixed(1) : '—',
-      weightedAverageScore: teamAgg?.weighted_aggregate_score !== null && teamAgg?.weighted_aggregate_score !== undefined ? parseFloat(teamAgg.weighted_aggregate_score).toFixed(1) : '—',
-      highestScore: teamAgg?.highest_score !== null && teamAgg?.highest_score !== undefined ? parseFloat(teamAgg.highest_score).toFixed(1) : '—',
-      lowestScore: teamAgg?.lowest_score !== null && teamAgg?.lowest_score !== undefined ? parseFloat(teamAgg.lowest_score).toFixed(1) : '—',
-    };
+    let stats = null;
+    try {
+      const teamAgg = await getTeamScores(team.id);
+      stats = {
+        totalJudges: evaluations.length,
+        completedJudges: parseInt(teamAgg?.completed_judges || 0),
+        averageScore: teamAgg?.aggregate_score !== null && teamAgg?.aggregate_score !== undefined ? parseFloat(teamAgg.aggregate_score).toFixed(1) : '—',
+        weightedAverageScore: teamAgg?.weighted_aggregate_score !== null && teamAgg?.weighted_aggregate_score !== undefined ? parseFloat(teamAgg.weighted_aggregate_score).toFixed(1) : '—',
+        highestScore: teamAgg?.highest_score !== null && teamAgg?.highest_score !== undefined ? parseFloat(teamAgg.highest_score).toFixed(1) : '—',
+        lowestScore: teamAgg?.lowest_score !== null && teamAgg?.lowest_score !== undefined ? parseFloat(teamAgg.lowest_score).toFixed(1) : '—',
+      };
+    } catch {
+      const submitted = evaluations.filter(e => e.status === 'submitted');
+      const scores = submitted.map(e => parseFloat(e.total_score)).filter(s => !isNaN(s));
+      stats = {
+        totalJudges: evaluations.length,
+        completedJudges: submitted.length,
+        averageScore: scores.length > 0 ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1) : '—',
+        weightedAverageScore: '—',
+        highestScore: scores.length > 0 ? Math.max(...scores).toFixed(1) : '—',
+        lowestScore: scores.length > 0 ? Math.min(...scores).toFixed(1) : '—',
+      };
+    }
 
     res.json({ team, evaluations, stats });
   } catch (error) {
     console.error('Get team error:', error);
-    res.status(500).json({ error: 'Failed to get team', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to get team', code: 'INTERNAL_ERROR' });
   }
 });
 

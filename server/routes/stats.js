@@ -110,46 +110,91 @@ router.get('/jury', authenticate, requireAny, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const [assignedCount, completedCount, pendingTeams] = await Promise.all([
-      queryOne('SELECT COUNT(*) as count FROM jury_assignments WHERE user_id = $1', [userId]),
-      queryOne(
-        "SELECT COUNT(*) as count FROM evaluations WHERE user_id = $1 AND status = 'submitted'",
-        [userId]
-      ),
-      queryAll(
-        `SELECT t.*, ja.assigned_at,
-          CASE WHEN e.id IS NOT NULL THEN e.status ELSE 'not_started' END as eval_status,
-          e.total_score, e.id as evaluation_id
-         FROM jury_assignments ja
-         JOIN teams t ON ja.team_id = t.id
-         LEFT JOIN evaluations e ON e.team_id = t.id AND e.user_id = $1
-         WHERE ja.user_id = $1
-         ORDER BY
-           CASE WHEN e.status = 'submitted' THEN 2
-                WHEN e.status = 'draft' THEN 0
-                ELSE 1 END,
-           t.team_code`,
-        [userId]
-      ),
-    ]);
+    try {
+      const [assignedCount, completedCount, pendingTeams] = await Promise.all([
+        queryOne('SELECT COUNT(*) as count FROM jury_assignments WHERE user_id = $1', [userId]),
+        queryOne(
+          "SELECT COUNT(*) as count FROM evaluations WHERE user_id = $1 AND status = 'submitted'",
+          [userId]
+        ),
+        queryAll(
+          `SELECT t.*, ja.assigned_at,
+            CASE WHEN e.id IS NOT NULL THEN e.status ELSE 'not_started' END as eval_status,
+            e.total_score, e.id as evaluation_id
+           FROM jury_assignments ja
+           JOIN teams t ON ja.team_id = t.id
+           LEFT JOIN evaluations e ON e.team_id = t.id AND e.user_id = $1
+           WHERE ja.user_id = $1
+           ORDER BY
+             CASE WHEN e.status = 'submitted' THEN 2
+                  WHEN e.status = 'draft' THEN 0
+                  ELSE 1 END,
+             t.team_code`,
+          [userId]
+        ),
+      ]);
 
-    const assigned = parseInt(assignedCount.count);
-    const completed = parseInt(completedCount.count);
-    const pending = assigned - completed;
-    const progress = assigned > 0 ? ((completed / assigned) * 100).toFixed(1) : 0;
+      const assigned = parseInt(assignedCount?.count || 0);
+      const completed = parseInt(completedCount?.count || 0);
+      const pending = assigned - completed;
+      const progress = assigned > 0 ? ((completed / assigned) * 100).toFixed(1) : 0;
 
-    res.json({
-      kpi: {
-        assigned,
-        completed,
-        pending,
-        progress: parseFloat(progress),
-      },
-      teams: pendingTeams,
-    });
+      return res.json({
+        kpi: {
+          assigned,
+          completed,
+          pending,
+          progress: parseFloat(progress),
+        },
+        teams: pendingTeams || [],
+      });
+    } catch (pgErr) {
+      console.warn('Postgres query failed in /api/stats/jury, falling back to Supabase REST client:', pgErr.message);
+
+      const [assignmentsRes, evalsRes] = await Promise.all([
+        supabaseAdmin.from('jury_assignments').select('*, teams(*)').eq('user_id', userId),
+        supabaseAdmin.from('evaluations').select('id, team_id, status, total_score').eq('user_id', userId),
+      ]);
+
+      const assignments = assignmentsRes.data || [];
+      const evals = evalsRes.data || [];
+      const evalMap = new Map(evals.map(e => [e.team_id, e]));
+
+      const teams = assignments.map(ja => {
+        const ev = evalMap.get(ja.team_id);
+        return {
+          ...(ja.teams || {}),
+          assigned_at: ja.assigned_at,
+          eval_status: ev ? ev.status : 'not_started',
+          total_score: ev ? ev.total_score : null,
+          evaluation_id: ev ? ev.id : null,
+        };
+      }).sort((a, b) => {
+        const order = { draft: 0, not_started: 1, submitted: 2 };
+        const orderA = order[a.eval_status] !== undefined ? order[a.eval_status] : 1;
+        const orderB = order[b.eval_status] !== undefined ? order[b.eval_status] : 1;
+        if (orderA !== orderB) return orderA - orderB;
+        return (a.team_code || '').localeCompare(b.team_code || '');
+      });
+
+      const assigned = assignments.length;
+      const completed = evals.filter(e => e.status === 'submitted').length;
+      const pending = assigned - completed;
+      const progress = assigned > 0 ? ((completed / assigned) * 100).toFixed(1) : 0;
+
+      return res.json({
+        kpi: {
+          assigned,
+          completed,
+          pending,
+          progress: parseFloat(progress),
+        },
+        teams,
+      });
+    }
   } catch (error) {
     console.error('Jury stats error:', error);
-    res.status(500).json({ error: 'Failed to get jury stats', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to get jury stats', code: 'INTERNAL_ERROR' });
   }
 });
 

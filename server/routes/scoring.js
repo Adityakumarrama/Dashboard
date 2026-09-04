@@ -3,6 +3,7 @@ import { authenticate } from '../middleware/auth.js';
 import { requireAdmin } from '../middleware/rbac.js';
 import { query, queryOne, queryAll } from '../config/database.js';
 import { logAction, getClientIp } from '../services/auditService.js';
+import supabaseAdmin from '../config/supabase.js';
 
 const router = Router();
 
@@ -13,12 +14,24 @@ const router = Router();
 router.get('/', authenticate, async (req, res) => {
   try {
     const { active_only } = req.query;
-    const whereClause = active_only === 'true' ? 'WHERE is_active = true' : '';
-    const criteria = await queryAll(`SELECT * FROM scoring_criteria ${whereClause} ORDER BY sort_order, created_at`);
+    let criteria = [];
+    try {
+      const whereClause = active_only === 'true' ? 'WHERE is_active = true' : '';
+      criteria = await queryAll(`SELECT * FROM scoring_criteria ${whereClause} ORDER BY sort_order, created_at`);
+    } catch (pgErr) {
+      console.warn('Postgres query failed in GET /api/scoring, falling back to Supabase REST:', pgErr.message);
+      let queryBuilder = supabaseAdmin.from('scoring_criteria').select('*').order('sort_order', { ascending: true });
+      if (active_only === 'true') {
+        queryBuilder = queryBuilder.eq('is_active', true);
+      }
+      const { data, error } = await queryBuilder;
+      if (error) throw error;
+      criteria = data || [];
+    }
     res.json({ criteria });
   } catch (error) {
     console.error('List criteria error:', error);
-    res.status(500).json({ error: 'Failed to list scoring criteria', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to list scoring criteria', code: 'INTERNAL_ERROR' });
   }
 });
 
