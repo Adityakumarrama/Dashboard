@@ -57,47 +57,50 @@ router.get('/', authenticate, requireAdmin, async (req, res) => {
     } catch (pgErr) {
       console.warn('Postgres query failed in GET /api/assignments, falling back to Supabase REST:', pgErr.message);
 
-      let queryBuilder = supabaseAdmin
-        .from('jury_assignments')
-        .select('*, users(id, full_name, judge_id, email), teams(id, team_code, team_name, category, track, organization)');
-      if (jury_id) {
-        queryBuilder = queryBuilder.eq('user_id', jury_id);
-      }
-      const { data: rawAssignments } = await queryBuilder;
+      const [jaRes, usersRes, teamsRes, rawEvalsRes] = await Promise.all([
+        jury_id
+          ? supabaseAdmin.from('jury_assignments').select('*').eq('user_id', jury_id)
+          : supabaseAdmin.from('jury_assignments').select('*'),
+        supabaseAdmin.from('users').select('id, full_name, judge_id, email, role, status').eq('status', 'active'),
+        supabaseAdmin.from('teams').select('id, team_code, team_name, category, track, organization'),
+        supabaseAdmin.from('evaluations').select('id, team_id, user_id, status, total_score, submitted_at'),
+      ]);
 
-      const { data: rawEvals } = await supabaseAdmin
-        .from('evaluations')
-        .select('id, team_id, user_id, status, total_score, submitted_at');
+      const userMap = new Map((usersRes.data || []).map(u => [u.id, u]));
+      const teamMap = new Map((teamsRes.data || []).map(t => [t.id, t]));
+      const rawEvals = rawEvalsRes.data || [];
+      const evalMap = new Map(rawEvals.map(e => [`${e.team_id}_${e.user_id}`, e]));
 
-      const evalMap = new Map((rawEvals || []).map(e => [`${e.team_id}_${e.user_id}`, e]));
-
-      const assignments = (rawAssignments || []).map(ja => {
+      const rawAssignments = jaRes.data || [];
+      const assignments = rawAssignments.map(ja => {
+        const u = userMap.get(ja.user_id);
+        const t = teamMap.get(ja.team_id);
         const ev = evalMap.get(`${ja.team_id}_${ja.user_id}`);
         return {
           ...ja,
-          jury_name: ja.users?.full_name,
-          judge_id: ja.users?.judge_id,
-          jury_email: ja.users?.email,
-          team_code: ja.teams?.team_code,
-          team_name: ja.teams?.team_name,
-          category: ja.teams?.category,
-          track: ja.teams?.track,
-          organization: ja.teams?.organization,
+          jury_name: u?.full_name,
+          judge_id: u?.judge_id,
+          jury_email: u?.email,
+          team_code: t?.team_code,
+          team_name: t?.team_name,
+          category: t?.category,
+          track: t?.track,
+          organization: t?.organization,
           eval_status: ev ? ev.status : 'not_started',
           total_score: ev ? ev.total_score : null,
         };
       });
 
-      const { data: juryUsers } = await supabaseAdmin
-        .from('users')
-        .select('id, full_name, judge_id, email')
-        .eq('role', 'JURY')
-        .eq('status', 'active');
+      const juryUsers = (usersRes.data || []).filter(u => u.role === 'JURY' || u.judge_id);
 
-      const jurySummary = (juryUsers || []).map(u => {
+      const jurySummary = juryUsers.map(u => {
         const userAssignments = assignments.filter(a => a.user_id === u.id);
         const completed = userAssignments.filter(a => a.eval_status === 'submitted');
         const pending = userAssignments.length - completed.length;
+        const userEvals = rawEvals.filter(e => e.user_id === u.id && e.status === 'submitted');
+        const lastActivity = userEvals.length > 0
+          ? userEvals.sort((a, b) => new Date(b.submitted_at) - new Date(a.submitted_at))[0].submitted_at
+          : null;
         return {
           id: u.id,
           full_name: u.full_name,
@@ -106,7 +109,7 @@ router.get('/', authenticate, requireAdmin, async (req, res) => {
           assigned_count: userAssignments.length,
           completed_count: completed.length,
           pending_count: pending,
-          last_activity: null,
+          last_activity: lastActivity,
         };
       });
 
@@ -376,16 +379,20 @@ router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
         [req.params.id]
       );
     } catch {
-      const { data } = await supabaseAdmin
+      const { data: jaData } = await supabaseAdmin
         .from('jury_assignments')
-        .select('*, users(full_name), teams(team_code)')
+        .select('*')
         .eq('id', req.params.id)
         .maybeSingle();
-      if (data) {
+      if (jaData) {
+        const [uRes, tRes] = await Promise.all([
+          supabaseAdmin.from('users').select('full_name').eq('id', jaData.user_id).maybeSingle(),
+          supabaseAdmin.from('teams').select('team_code').eq('id', jaData.team_id).maybeSingle(),
+        ]);
         assignment = {
-          ...data,
-          jury_name: data.users?.full_name,
-          team_code: data.teams?.team_code,
+          ...jaData,
+          jury_name: uRes.data?.full_name,
+          team_code: tRes.data?.team_code,
         };
       }
     }

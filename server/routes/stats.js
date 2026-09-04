@@ -109,6 +109,9 @@ router.get('/admin', authenticate, requireAdmin, async (req, res) => {
         const completed = userEvals.length;
         const pending = Math.max(assigned - completed, 0);
         const progress = assigned > 0 ? parseFloat(((completed / assigned) * 100).toFixed(1)) : 0;
+        const lastActivity = userEvals.length > 0
+          ? userEvals.sort((a, b) => new Date(b.submitted_at) - new Date(a.submitted_at))[0].submitted_at
+          : null;
         return {
           id: j.id,
           full_name: j.full_name,
@@ -117,7 +120,7 @@ router.get('/admin', authenticate, requireAdmin, async (req, res) => {
           completed,
           pending,
           progress,
-          last_activity: null,
+          last_activity: lastActivity,
         };
       });
 

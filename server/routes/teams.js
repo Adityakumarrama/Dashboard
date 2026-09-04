@@ -202,11 +202,34 @@ router.get('/:id', authenticate, requireAny, async (req, res) => {
         .select('*, users(full_name, judge_id)')
         .eq('team_id', team.id)
         .order('submitted_at', { ascending: false });
-      evaluations = (evals || []).map(e => ({
-        ...e,
-        judge_name: e.users?.full_name,
-        judge_id: e.users?.judge_id,
-      }));
+
+      const { data: allCriteria } = await supabaseAdmin.from('scoring_criteria').select('*').order('sort_order');
+      const criteriaMap = new Map((allCriteria || []).map(c => [c.id, c]));
+
+      evaluations = [];
+      for (const ev of (evals || [])) {
+        const { data: scores } = await supabaseAdmin
+          .from('evaluation_scores')
+          .select('*')
+          .eq('evaluation_id', ev.id);
+
+        const mappedScores = (scores || []).map(s => {
+          const crit = criteriaMap.get(s.criteria_id || s.criterion_id);
+          return {
+            ...s,
+            criteria_name: crit?.name,
+            max_score: crit?.max_score,
+            weight: crit?.weight,
+          };
+        });
+
+        evaluations.push({
+          ...ev,
+          judge_name: ev.users?.full_name,
+          judge_id: ev.users?.judge_id,
+          scores: mappedScores,
+        });
+      }
     }
 
     // Authoritative team statistics calculated by PostgreSQL view v_team_score_aggregates

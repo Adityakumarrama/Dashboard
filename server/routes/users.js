@@ -70,15 +70,25 @@ router.get('/', authenticate, requireAdmin, async (req, res) => {
       if (status) queryBuilder = queryBuilder.eq('status', status);
       if (search) queryBuilder = queryBuilder.ilike('full_name', `%${search}%`);
 
-      const { data: supaUsers, count, error: supaErr } = await queryBuilder
-        .order('created_at', { ascending: false })
-        .range(offset, offset + safeLimit - 1);
+      const [usersResult, jaRes, evalsRes] = await Promise.all([
+        queryBuilder
+          .order('created_at', { ascending: false })
+          .range(offset, offset + safeLimit - 1),
+        supabaseAdmin.from('jury_assignments').select('id, user_id'),
+        supabaseAdmin.from('evaluations').select('id, user_id, status').eq('status', 'submitted'),
+      ]);
 
+      const { data: supaUsers, count, error: supaErr } = usersResult;
       if (supaErr) throw supaErr;
+
+      const jaList = jaRes.data || [];
+      const evalsList = evalsRes.data || [];
 
       const safeUsers = (supaUsers || []).map(u => {
         const { auth_id, ...rest } = u;
-        return { ...rest, assigned_teams: 0, evaluations_completed: 0 };
+        const assigned_teams = jaList.filter(ja => ja.user_id === u.id).length;
+        const evaluations_completed = evalsList.filter(e => e.user_id === u.id).length;
+        return { ...rest, assigned_teams, evaluations_completed };
       });
 
       return res.json({
@@ -108,8 +118,18 @@ router.get('/:id', authenticate, requireAdmin, async (req, res) => {
       );
     } catch (pgErr) {
       console.warn('Postgres query failed in GET /api/users/:id:', pgErr.message);
-      const { data: supaUser } = await supabaseAdmin.from('users').select('*').eq('id', req.params.id).maybeSingle();
-      user = supaUser;
+      const [uRes, jaRes, evalsRes] = await Promise.all([
+        supabaseAdmin.from('users').select('*').eq('id', req.params.id).maybeSingle(),
+        supabaseAdmin.from('jury_assignments').select('id').eq('user_id', req.params.id),
+        supabaseAdmin.from('evaluations').select('id').eq('user_id', req.params.id).eq('status', 'submitted'),
+      ]);
+      if (uRes.data) {
+        user = {
+          ...uRes.data,
+          assigned_teams: jaRes.data?.length || 0,
+          evaluations_completed: evalsRes.data?.length || 0,
+        };
+      }
     }
 
     if (!user) {
