@@ -230,33 +230,63 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
  */
 router.put('/:id', authenticate, requireAdmin, async (req, res) => {
   try {
-    const existing = await queryOne('SELECT * FROM users WHERE id = $1', [req.params.id]);
+    let existing = null;
+    try {
+      existing = await queryOne('SELECT * FROM users WHERE id = $1', [req.params.id]);
+    } catch {
+      const { data } = await supabaseAdmin.from('users').select('*').eq('id', req.params.id).maybeSingle();
+      existing = data;
+    }
+
     if (!existing) {
       return res.status(404).json({ error: 'User not found', code: 'NOT_FOUND' });
     }
 
     const { full_name, role, judge_id, status } = req.body;
 
-    const user = await queryOne(
-      `UPDATE users SET
-        full_name = COALESCE($1, full_name),
-        role = COALESCE($2, role),
-        judge_id = COALESCE($3, judge_id),
-        status = COALESCE($4, status)
-       WHERE id = $5
-       RETURNING id, username, email, full_name, role, judge_id, status, created_at, updated_at`,
-      [full_name, role, judge_id, status, req.params.id]
-    );
+    let user = null;
+    try {
+      user = await queryOne(
+        `UPDATE users SET
+          full_name = COALESCE($1, full_name),
+          role = COALESCE($2, role),
+          judge_id = COALESCE($3, judge_id),
+          status = COALESCE($4, status)
+         WHERE id = $5
+         RETURNING id, username, email, full_name, role, judge_id, status, created_at, updated_at`,
+        [full_name, role, judge_id, status, req.params.id]
+      );
+    } catch {
+      const updateFields = {};
+      if (full_name !== undefined) updateFields.full_name = full_name;
+      if (role !== undefined) updateFields.role = role;
+      if (judge_id !== undefined) updateFields.judge_id = judge_id;
+      if (status !== undefined) updateFields.status = status;
 
-    await logAction(req.user.id, 'user.updated', 'user', user.id,
-      { before: { full_name: existing.full_name, role: existing.role, status: existing.status },
-        after: { full_name: user.full_name, role: user.role, status: user.status } },
-      getClientIp(req));
+      const { data, error: supaErr } = await supabaseAdmin
+        .from('users')
+        .update(updateFields)
+        .eq('id', req.params.id)
+        .select('id, username, email, full_name, role, judge_id, status, created_at, updated_at')
+        .single();
+
+      if (supaErr) throw new Error(supaErr.message);
+      user = data;
+    }
+
+    try {
+      await logAction(req.user.id, 'user.updated', 'user', user.id,
+        { before: { full_name: existing.full_name, role: existing.role, status: existing.status },
+          after: { full_name: user.full_name, role: user.role, status: user.status } },
+        getClientIp(req));
+    } catch (logErr) {
+      console.warn('Audit log error:', logErr.message);
+    }
 
     res.json({ user });
   } catch (error) {
     console.error('Update user error:', error);
-    res.status(500).json({ error: 'Failed to update user', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to update user', code: 'INTERNAL_ERROR' });
   }
 });
 
@@ -266,7 +296,14 @@ router.put('/:id', authenticate, requireAdmin, async (req, res) => {
  */
 router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
   try {
-    const user = await queryOne('SELECT * FROM users WHERE id = $1', [req.params.id]);
+    let user = null;
+    try {
+      user = await queryOne('SELECT * FROM users WHERE id = $1', [req.params.id]);
+    } catch {
+      const { data } = await supabaseAdmin.from('users').select('*').eq('id', req.params.id).maybeSingle();
+      user = data;
+    }
+
     if (!user) {
       return res.status(404).json({ error: 'User not found', code: 'NOT_FOUND' });
     }
@@ -277,17 +314,31 @@ router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
     }
 
     // Get stats for confirmation
-    const evalCount = await queryOne(
-      'SELECT COUNT(*) as count FROM evaluations WHERE user_id = $1 AND status = \'submitted\'',
-      [req.params.id]
-    );
-    const pendingCount = await queryOne(
-      'SELECT COUNT(*) as count FROM jury_assignments WHERE user_id = $1',
-      [req.params.id]
-    );
+    let evalCount = { count: 0 };
+    let pendingCount = { count: 0 };
+    try {
+      evalCount = await queryOne(
+        'SELECT COUNT(*) as count FROM evaluations WHERE user_id = $1 AND status = \'submitted\'',
+        [req.params.id]
+      ) || { count: 0 };
+      pendingCount = await queryOne(
+        'SELECT COUNT(*) as count FROM jury_assignments WHERE user_id = $1',
+        [req.params.id]
+      ) || { count: 0 };
+    } catch {
+      // Stats not critical, continue with defaults
+    }
 
     // Soft delete - deactivate user
-    await query('UPDATE users SET status = \'inactive\' WHERE id = $1', [req.params.id]);
+    try {
+      await query('UPDATE users SET status = \'inactive\' WHERE id = $1', [req.params.id]);
+    } catch {
+      const { error: supaErr } = await supabaseAdmin
+        .from('users')
+        .update({ status: 'inactive' })
+        .eq('id', req.params.id);
+      if (supaErr) throw new Error(supaErr.message);
+    }
 
     // Disable in Supabase Auth if they have auth_id
     if (user.auth_id) {
@@ -298,21 +349,26 @@ router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
       }
     }
 
-    await logAction(req.user.id, 'user.deleted', 'user', req.params.id,
-      { username: user.username, submitted_evaluations: evalCount.count, assignments: pendingCount.count },
-      getClientIp(req));
+    try {
+      await logAction(req.user.id, 'user.deleted', 'user', req.params.id,
+        { username: user.username, submitted_evaluations: evalCount.count, assignments: pendingCount.count },
+        getClientIp(req));
+    } catch (logErr) {
+      console.warn('Audit log error:', logErr.message);
+    }
 
     res.json({
       message: 'User deactivated successfully',
       stats: {
-        submittedEvaluations: parseInt(evalCount.count),
-        assignments: parseInt(pendingCount.count),
+        submittedEvaluations: parseInt(evalCount.count || 0),
+        assignments: parseInt(pendingCount.count || 0),
       },
     });
   } catch (error) {
     console.error('Delete user error:', error);
-    res.status(500).json({ error: 'Failed to delete user', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to delete user', code: 'INTERNAL_ERROR' });
   }
 });
 
 export default router;
+

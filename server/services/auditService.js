@@ -1,4 +1,5 @@
 import { query } from '../config/database.js';
+import supabaseAdmin from '../config/supabase.js';
 
 /**
  * Log an auditable action
@@ -10,9 +11,21 @@ export async function logAction(userId, action, entityType, entityId, details = 
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [userId, action, entityType, entityId, details ? JSON.stringify(details) : null, ipAddress]
     );
-  } catch (error) {
-    // Audit logging should never break the main operation
-    console.error('Audit log error:', error.message);
+  } catch (pgError) {
+    // Fallback to Supabase REST
+    try {
+      await supabaseAdmin.from('audit_logs').insert({
+        user_id: userId,
+        action,
+        entity_type: entityType,
+        entity_id: entityId,
+        details: details || null,
+        ip_address: ipAddress,
+      });
+    } catch (supaErr) {
+      // Audit logging should never break the main operation
+      console.error('Audit log error (both PG and REST failed):', pgError.message, supaErr.message);
+    }
   }
 }
 
