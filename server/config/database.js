@@ -7,10 +7,8 @@ const { Pool } = pg;
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' || process.env.DATABASE_URL?.includes('supabase')
-    ? { rejectUnauthorized: false }
-    : false,
-  max: 20,
+  ssl: { rejectUnauthorized: false },
+  max: process.env.VERCEL ? 3 : 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
 });
