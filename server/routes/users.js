@@ -17,54 +17,78 @@ router.get('/', authenticate, requireAdmin, async (req, res) => {
     const { page, limit, search, role, status } = req.query;
     const { limit: safeLimit, offset, page: safePage } = buildPaginationQuery(page, limit);
 
-    let where = [];
-    let params = [];
-    let paramIdx = 1;
+    try {
+      let where = [];
+      let params = [];
+      let paramIdx = 1;
 
-    if (search) {
-      where.push(`(full_name ILIKE $${paramIdx} OR email ILIKE $${paramIdx} OR username ILIKE $${paramIdx})`);
-      params.push(`%${search}%`);
-      paramIdx++;
+      if (search) {
+        where.push(`(full_name ILIKE $${paramIdx} OR email ILIKE $${paramIdx} OR username ILIKE $${paramIdx})`);
+        params.push(`%${search}%`);
+        paramIdx++;
+      }
+      if (role) {
+        where.push(`role = $${paramIdx}`);
+        params.push(role);
+        paramIdx++;
+      }
+      if (status) {
+        where.push(`status = $${paramIdx}`);
+        params.push(status);
+        paramIdx++;
+      }
+
+      const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+
+      const countResult = await queryOne(`SELECT COUNT(*) as count FROM users ${whereClause}`, params);
+      const total = parseInt(countResult?.count || 0);
+
+      const users = await queryAll(
+        `SELECT u.*,
+          (SELECT COUNT(*) FROM jury_assignments ja WHERE ja.user_id = u.id) as assigned_teams,
+          (SELECT COUNT(*) FROM evaluations e WHERE e.user_id = u.id AND e.status = 'submitted') as evaluations_completed
+         FROM users u ${whereClause}
+         ORDER BY u.created_at DESC
+         LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+        [...params, safeLimit, offset]
+      );
+
+      // Remove sensitive fields
+      const safeUsers = users.map(u => {
+        const { auth_id, ...rest } = u;
+        return rest;
+      });
+
+      return res.json({
+        users: safeUsers,
+        pagination: paginationMeta(total, safePage, safeLimit),
+      });
+    } catch (pgError) {
+      console.warn('Postgres query failed in GET /api/users, falling back to Supabase REST client:', pgError.message);
+      let queryBuilder = supabaseAdmin.from('users').select('*', { count: 'exact' });
+      if (role) queryBuilder = queryBuilder.eq('role', role);
+      if (status) queryBuilder = queryBuilder.eq('status', status);
+      if (search) queryBuilder = queryBuilder.ilike('full_name', `%${search}%`);
+
+      const { data: supaUsers, count, error: supaErr } = await queryBuilder
+        .order('created_at', { ascending: false })
+        .range(offset, offset + safeLimit - 1);
+
+      if (supaErr) throw supaErr;
+
+      const safeUsers = (supaUsers || []).map(u => {
+        const { auth_id, ...rest } = u;
+        return { ...rest, assigned_teams: 0, evaluations_completed: 0 };
+      });
+
+      return res.json({
+        users: safeUsers,
+        pagination: paginationMeta(count || safeUsers.length, safePage, safeLimit),
+      });
     }
-    if (role) {
-      where.push(`role = $${paramIdx}`);
-      params.push(role);
-      paramIdx++;
-    }
-    if (status) {
-      where.push(`status = $${paramIdx}`);
-      params.push(status);
-      paramIdx++;
-    }
-
-    const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
-
-    const countResult = await queryOne(`SELECT COUNT(*) as count FROM users ${whereClause}`, params);
-    const total = parseInt(countResult.count);
-
-    const users = await queryAll(
-      `SELECT u.*,
-        (SELECT COUNT(*) FROM jury_assignments ja WHERE ja.user_id = u.id) as assigned_teams,
-        (SELECT COUNT(*) FROM evaluations e WHERE e.user_id = u.id AND e.status = 'submitted') as evaluations_completed
-       FROM users u ${whereClause}
-       ORDER BY u.created_at DESC
-       LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
-      [...params, safeLimit, offset]
-    );
-
-    // Remove sensitive fields
-    const safeUsers = users.map(u => {
-      const { auth_id, ...rest } = u;
-      return rest;
-    });
-
-    res.json({
-      users: safeUsers,
-      pagination: paginationMeta(total, safePage, safeLimit),
-    });
   } catch (error) {
     console.error('List users error:', error);
-    res.status(500).json({ error: 'Failed to list users', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to list users', code: 'INTERNAL_ERROR' });
   }
 });
 
@@ -73,13 +97,20 @@ router.get('/', authenticate, requireAdmin, async (req, res) => {
  */
 router.get('/:id', authenticate, requireAdmin, async (req, res) => {
   try {
-    const user = await queryOne(
-      `SELECT u.*,
-        (SELECT COUNT(*) FROM jury_assignments ja WHERE ja.user_id = u.id) as assigned_teams,
-        (SELECT COUNT(*) FROM evaluations e WHERE e.user_id = u.id AND e.status = 'submitted') as evaluations_completed
-       FROM users u WHERE u.id = $1`,
-      [req.params.id]
-    );
+    let user = null;
+    try {
+      user = await queryOne(
+        `SELECT u.*,
+          (SELECT COUNT(*) FROM jury_assignments ja WHERE ja.user_id = u.id) as assigned_teams,
+          (SELECT COUNT(*) FROM evaluations e WHERE e.user_id = u.id AND e.status = 'submitted') as evaluations_completed
+         FROM users u WHERE u.id = $1`,
+        [req.params.id]
+      );
+    } catch (pgErr) {
+      console.warn('Postgres query failed in GET /api/users/:id:', pgErr.message);
+      const { data: supaUser } = await supabaseAdmin.from('users').select('*').eq('id', req.params.id).maybeSingle();
+      user = supaUser;
+    }
 
     if (!user) {
       return res.status(404).json({ error: 'User not found', code: 'NOT_FOUND' });
@@ -89,7 +120,7 @@ router.get('/:id', authenticate, requireAdmin, async (req, res) => {
     res.json({ user: safeUser });
   } catch (error) {
     console.error('Get user error:', error);
-    res.status(500).json({ error: 'Failed to get user', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to get user', code: 'INTERNAL_ERROR' });
   }
 });
 
@@ -111,7 +142,18 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
     }
 
     // Check duplicates
-    const existingUser = await queryOne('SELECT id FROM users WHERE username = $1 OR email = $2', [username, email.toLowerCase()]);
+    let existingUser = null;
+    try {
+      existingUser = await queryOne('SELECT id FROM users WHERE username = $1 OR email = $2', [username, email.toLowerCase()]);
+    } catch {
+      const { data: supaExist } = await supabaseAdmin
+        .from('users')
+        .select('id')
+        .or(`username.eq.${username},email.eq.${email.toLowerCase()}`)
+        .maybeSingle();
+      existingUser = supaExist;
+    }
+
     if (existingUser) {
       return res.status(409).json({ error: 'Username or email already exists in system', code: 'DUPLICATE_USER' });
     }
@@ -178,7 +220,7 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
     res.status(201).json({ user });
   } catch (error) {
     console.error('Create user error:', error);
-    res.status(500).json({ error: 'Failed to create user', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to create user', code: 'INTERNAL_ERROR' });
   }
 });
 

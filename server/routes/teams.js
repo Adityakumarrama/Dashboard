@@ -4,6 +4,7 @@ import { requireAdmin, requireAny } from '../middleware/rbac.js';
 import { query, queryOne, queryAll } from '../config/database.js';
 import { buildPaginationQuery, paginationMeta, sanitize } from '../utils/helpers.js';
 import { logAction, getClientIp } from '../services/auditService.js';
+import supabaseAdmin from '../config/supabase.js';
 
 const router = Router();
 
@@ -16,48 +17,69 @@ router.get('/', authenticate, requireAny, async (req, res) => {
     const { page, limit, search, category, track, status } = req.query;
     const { limit: safeLimit, offset, page: safePage } = buildPaginationQuery(page, limit);
 
-    let where = [];
-    let params = [];
-    let paramIdx = 1;
+    try {
+      let where = [];
+      let params = [];
+      let paramIdx = 1;
 
-    if (search) {
-      where.push(`(team_code ILIKE $${paramIdx} OR team_name ILIKE $${paramIdx} OR organization ILIKE $${paramIdx})`);
-      params.push(`%${search}%`);
-      paramIdx++;
+      if (search) {
+        where.push(`(team_code ILIKE $${paramIdx} OR team_name ILIKE $${paramIdx} OR organization ILIKE $${paramIdx})`);
+        params.push(`%${search}%`);
+        paramIdx++;
+      }
+      if (category) {
+        where.push(`category = $${paramIdx}`);
+        params.push(category);
+        paramIdx++;
+      }
+      if (track) {
+        where.push(`track = $${paramIdx}`);
+        params.push(track);
+        paramIdx++;
+      }
+      if (status) {
+        where.push(`registration_status = $${paramIdx}`);
+        params.push(status);
+        paramIdx++;
+      }
+
+      const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+
+      const countResult = await queryOne(`SELECT COUNT(*) as count FROM teams ${whereClause}`, params);
+      const total = parseInt(countResult?.count || 0);
+
+      const teams = await queryAll(
+        `SELECT * FROM teams ${whereClause} ORDER BY created_at DESC LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+        [...params, safeLimit, offset]
+      );
+
+      return res.json({
+        teams: teams || [],
+        pagination: paginationMeta(total, safePage, safeLimit),
+      });
+    } catch (pgErr) {
+      console.warn('Postgres query failed in GET /api/teams, falling back to Supabase REST client:', pgErr.message);
+
+      let queryBuilder = supabaseAdmin.from('teams').select('*', { count: 'exact' });
+      if (category) queryBuilder = queryBuilder.eq('category', category);
+      if (track) queryBuilder = queryBuilder.eq('track', track);
+      if (status) queryBuilder = queryBuilder.eq('registration_status', status);
+      if (search) queryBuilder = queryBuilder.or(`team_code.ilike.%${search}%,team_name.ilike.%${search}%,organization.ilike.%${search}%`);
+
+      const { data: supaTeams, count, error: supaErr } = await queryBuilder
+        .order('created_at', { ascending: false })
+        .range(offset, offset + safeLimit - 1);
+
+      if (supaErr) throw supaErr;
+
+      return res.json({
+        teams: supaTeams || [],
+        pagination: paginationMeta(count || (supaTeams?.length || 0), safePage, safeLimit),
+      });
     }
-    if (category) {
-      where.push(`category = $${paramIdx}`);
-      params.push(category);
-      paramIdx++;
-    }
-    if (track) {
-      where.push(`track = $${paramIdx}`);
-      params.push(track);
-      paramIdx++;
-    }
-    if (status) {
-      where.push(`registration_status = $${paramIdx}`);
-      params.push(status);
-      paramIdx++;
-    }
-
-    const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
-
-    const countResult = await queryOne(`SELECT COUNT(*) as count FROM teams ${whereClause}`, params);
-    const total = parseInt(countResult.count);
-
-    const teams = await queryAll(
-      `SELECT * FROM teams ${whereClause} ORDER BY created_at DESC LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
-      [...params, safeLimit, offset]
-    );
-
-    res.json({
-      teams,
-      pagination: paginationMeta(total, safePage, safeLimit),
-    });
   } catch (error) {
     console.error('List teams error:', error);
-    res.status(500).json({ error: 'Failed to list teams', code: 'INTERNAL_ERROR' });
+    res.status(500).json({ error: error.message || 'Failed to list teams', code: 'INTERNAL_ERROR' });
   }
 });
 
