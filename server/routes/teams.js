@@ -4,6 +4,7 @@ import { requireAdmin, requireAny } from '../middleware/rbac.js';
 import { query, queryOne, queryAll } from '../config/database.js';
 import { buildPaginationQuery, paginationMeta, sanitize } from '../utils/helpers.js';
 import { logAction, getClientIp } from '../services/auditService.js';
+import { getTeamScores } from '../services/scoringService.js';
 import supabaseAdmin from '../config/supabase.js';
 
 const router = Router();
@@ -145,7 +146,7 @@ router.get('/:id', authenticate, requireAny, async (req, res) => {
       const scores = await queryAll(
         `SELECT es.*, sc.name as criteria_name, sc.max_score, sc.weight
          FROM evaluation_scores es
-         JOIN scoring_criteria sc ON es.criteria_id = sc.id
+         JOIN scoring_criteria sc ON (COALESCE(es.criteria_id, es.criterion_id) = sc.id)
          WHERE es.evaluation_id = $1
          ORDER BY sc.sort_order`,
         [evaluation.id]
@@ -153,7 +154,18 @@ router.get('/:id', authenticate, requireAny, async (req, res) => {
       evaluation.scores = scores;
     }
 
-    res.json({ team, evaluations });
+    // Authoritative team statistics calculated by PostgreSQL view v_team_score_aggregates
+    const teamAgg = await getTeamScores(team.id);
+    const stats = {
+      totalJudges: evaluations.length,
+      completedJudges: parseInt(teamAgg?.completed_judges || 0),
+      averageScore: teamAgg?.aggregate_score !== null && teamAgg?.aggregate_score !== undefined ? parseFloat(teamAgg.aggregate_score).toFixed(1) : '—',
+      weightedAverageScore: teamAgg?.weighted_aggregate_score !== null && teamAgg?.weighted_aggregate_score !== undefined ? parseFloat(teamAgg.weighted_aggregate_score).toFixed(1) : '—',
+      highestScore: teamAgg?.highest_score !== null && teamAgg?.highest_score !== undefined ? parseFloat(teamAgg.highest_score).toFixed(1) : '—',
+      lowestScore: teamAgg?.lowest_score !== null && teamAgg?.lowest_score !== undefined ? parseFloat(teamAgg.lowest_score).toFixed(1) : '—',
+    };
+
+    res.json({ team, evaluations, stats });
   } catch (error) {
     console.error('Get team error:', error);
     res.status(500).json({ error: 'Failed to get team', code: 'INTERNAL_ERROR' });

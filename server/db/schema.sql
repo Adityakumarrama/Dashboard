@@ -96,10 +96,41 @@ CREATE TABLE IF NOT EXISTS evaluations (
 CREATE TABLE IF NOT EXISTS evaluation_scores (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     evaluation_id UUID NOT NULL REFERENCES evaluations(id) ON DELETE CASCADE,
-    criteria_id UUID NOT NULL REFERENCES scoring_criteria(id) ON DELETE CASCADE,
+    criteria_id UUID REFERENCES scoring_criteria(id) ON DELETE CASCADE,
+    criterion_id UUID REFERENCES scoring_criteria(id) ON DELETE CASCADE,
+    team_id UUID REFERENCES teams(id) ON DELETE CASCADE,
+    judge_id UUID REFERENCES users(id) ON DELETE CASCADE,
     score NUMERIC(6,2) CHECK (score >= 0),
     comment TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (evaluation_id, criteria_id)
+);
+
+-- Ensure columns exist if table was already created in earlier migration
+ALTER TABLE evaluation_scores ADD COLUMN IF NOT EXISTS criterion_id UUID REFERENCES scoring_criteria(id) ON DELETE CASCADE;
+ALTER TABLE evaluation_scores ADD COLUMN IF NOT EXISTS team_id UUID REFERENCES teams(id) ON DELETE CASCADE;
+ALTER TABLE evaluation_scores ADD COLUMN IF NOT EXISTS judge_id UUID REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE evaluation_scores ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE evaluation_scores ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- ============================================================
+-- EVALUATION SCORE HISTORY (Audit trail & snapshots)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS evaluation_score_history (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    evaluation_id UUID NOT NULL REFERENCES evaluations(id) ON DELETE CASCADE,
+    team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    judge_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    total_score NUMERIC(8,2),
+    weighted_score NUMERIC(8,2),
+    normalized_score NUMERIC(8,4),
+    scores_snapshot JSONB NOT NULL,
+    action TEXT NOT NULL, -- 'submitted', 'reopened', 'updated'
+    changed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ============================================================
@@ -176,34 +207,183 @@ CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_logs(entity_type, entity_id
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
 
-CREATE INDEX IF NOT EXISTS idx_eval_scores_evaluation ON evaluation_scores(evaluation_id);
-CREATE INDEX IF NOT EXISTS idx_scoring_criteria_active ON scoring_criteria(is_active) WHERE is_active = true;
+-- ============================================================
+-- INDEXES FOR SCORE AUDIT AND FAST AGGREGATION
+-- ============================================================
+CREATE INDEX IF NOT EXISTS idx_eval_scores_team_id ON evaluation_scores(team_id);
+CREATE INDEX IF NOT EXISTS idx_eval_scores_judge_id ON evaluation_scores(judge_id);
+CREATE INDEX IF NOT EXISTS idx_eval_scores_criteria_id ON evaluation_scores(criteria_id);
+CREATE INDEX IF NOT EXISTS idx_eval_scores_criterion_id ON evaluation_scores(criterion_id);
+CREATE INDEX IF NOT EXISTS idx_eval_history_eval_id ON evaluation_score_history(evaluation_id);
+CREATE INDEX IF NOT EXISTS idx_eval_history_team_id ON evaluation_score_history(team_id);
+CREATE INDEX IF NOT EXISTS idx_eval_history_created_at ON evaluation_score_history(created_at DESC);
 
 -- ============================================================
--- TRIGGERS - Auto-update updated_at
+-- AUTHORITATIVE SCORE CALCULATION FUNCTIONS (Database-First)
 -- ============================================================
-CREATE OR REPLACE FUNCTION update_updated_at()
-RETURNS TRIGGER AS $$
+
+-- Function to calculate judge evaluation total authoritatively
+CREATE OR REPLACE FUNCTION fn_calculate_evaluation_total(p_evaluation_id UUID)
+RETURNS TABLE (
+    total_score NUMERIC(8,2),
+    weighted_score NUMERIC(8,2),
+    normalized_score NUMERIC(8,4)
+) AS $$
+DECLARE
+    v_total NUMERIC(8,2) := 0;
+    v_weighted NUMERIC(8,2) := 0;
+    v_normalized NUMERIC(8,4) := 0;
+    v_sum_weight NUMERIC(10,2) := 0;
+    v_sum_max NUMERIC(10,2) := 0;
+    v_weighted_sum NUMERIC(12,4) := 0;
 BEGIN
-    NEW.updated_at = NOW();
+    SELECT
+        COALESCE(SUM(es.score), 0),
+        COALESCE(SUM(sc.max_score), 0),
+        COALESCE(SUM(sc.weight), 0),
+        COALESCE(SUM(es.score * sc.weight), 0)
+    INTO
+        v_total,
+        v_sum_max,
+        v_sum_weight,
+        v_weighted_sum
+    FROM evaluation_scores es
+    JOIN scoring_criteria sc ON (COALESCE(es.criteria_id, es.criterion_id) = sc.id)
+    WHERE es.evaluation_id = p_evaluation_id
+      AND sc.is_active = true
+      AND es.score IS NOT NULL;
+
+    IF v_sum_weight > 0 THEN
+        v_weighted := ROUND((v_weighted_sum / v_sum_weight)::numeric, 2);
+    ELSE
+        v_weighted := 0;
+    END IF;
+
+    IF v_sum_max > 0 THEN
+        v_normalized := ROUND(((v_total / v_sum_max) * 100)::numeric, 4);
+    ELSE
+        v_normalized := 0;
+    END IF;
+
+    -- Update evaluations table authoritatively
+    UPDATE evaluations e
+    SET
+        total_score = v_total,
+        weighted_score = v_weighted,
+        normalized_score = v_normalized,
+        updated_at = NOW()
+    WHERE e.id = p_evaluation_id;
+
+    RETURN QUERY SELECT v_total, v_weighted, v_normalized;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger to auto-populate team_id, judge_id, and sync criteria_id/criterion_id
+CREATE OR REPLACE FUNCTION fn_eval_scores_before_save()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_team_id UUID;
+    v_user_id UUID;
+BEGIN
+    -- Ensure criterion_id and criteria_id stay in sync
+    IF NEW.criteria_id IS NULL AND NEW.criterion_id IS NOT NULL THEN
+        NEW.criteria_id := NEW.criterion_id;
+    ELSIF NEW.criterion_id IS NULL AND NEW.criteria_id IS NOT NULL THEN
+        NEW.criterion_id := NEW.criteria_id;
+    END IF;
+
+    -- Auto-populate team_id and judge_id from parent evaluation if not provided
+    IF NEW.team_id IS NULL OR NEW.judge_id IS NULL THEN
+        SELECT e.team_id, e.user_id INTO v_team_id, v_user_id
+        FROM evaluations e WHERE e.id = NEW.evaluation_id;
+
+        IF NEW.team_id IS NULL THEN
+            NEW.team_id := v_team_id;
+        END IF;
+        IF NEW.judge_id IS NULL THEN
+            NEW.judge_id := v_user_id;
+        END IF;
+    END IF;
+
+    NEW.updated_at := NOW();
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tr_users_updated') THEN
-        CREATE TRIGGER tr_users_updated BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+DROP TRIGGER IF EXISTS tr_eval_scores_before_save ON evaluation_scores;
+CREATE TRIGGER tr_eval_scores_before_save
+BEFORE INSERT OR UPDATE ON evaluation_scores
+FOR EACH ROW EXECUTE FUNCTION fn_eval_scores_before_save();
+
+-- Trigger to auto-recalculate evaluation totals on score change
+CREATE OR REPLACE FUNCTION fn_eval_scores_after_change()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_eval_id UUID;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        v_eval_id := OLD.evaluation_id;
+    ELSE
+        v_eval_id := NEW.evaluation_id;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tr_teams_updated') THEN
-        CREATE TRIGGER tr_teams_updated BEFORE UPDATE ON teams FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+    PERFORM fn_calculate_evaluation_total(v_eval_id);
+
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    ELSE
+        RETURN NEW;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tr_scoring_criteria_updated') THEN
-        CREATE TRIGGER tr_scoring_criteria_updated BEFORE UPDATE ON scoring_criteria FOR EACH ROW EXECUTE FUNCTION update_updated_at();
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tr_evaluations_updated') THEN
-        CREATE TRIGGER tr_evaluations_updated BEFORE UPDATE ON evaluations FOR EACH ROW EXECUTE FUNCTION update_updated_at();
-    END IF;
-END $$;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS tr_eval_scores_after_change ON evaluation_scores;
+CREATE TRIGGER tr_eval_scores_after_change
+AFTER INSERT OR UPDATE OR DELETE ON evaluation_scores
+FOR EACH ROW EXECUTE FUNCTION fn_eval_scores_after_change();
+
+-- ============================================================
+-- AUTHORITATIVE VIEWS (Single Source of Truth)
+-- ============================================================
+
+-- View: Team score aggregates (strictly submitted evaluations)
+CREATE OR REPLACE VIEW v_team_score_aggregates AS
+SELECT
+    t.id AS team_id,
+    t.team_code,
+    t.team_name,
+    t.organization,
+    t.category,
+    t.track,
+    t.problem_statement_id,
+    t.problem_statement_title,
+    t.registration_status,
+    COUNT(DISTINCT ja.user_id) AS assigned_judges,
+    COUNT(DISTINCT CASE WHEN e.status = 'submitted' THEN e.user_id END) AS completed_judges,
+    COUNT(DISTINCT CASE WHEN e.status = 'draft' THEN e.user_id END) AS draft_judges,
+    ROUND(AVG(CASE WHEN e.status = 'submitted' THEN e.total_score END), 2) AS aggregate_score,
+    ROUND(AVG(CASE WHEN e.status = 'submitted' THEN e.weighted_score END), 2) AS weighted_aggregate_score,
+    ROUND(AVG(CASE WHEN e.status = 'submitted' THEN e.normalized_score END), 4) AS normalized_aggregate_score,
+    MAX(CASE WHEN e.status = 'submitted' THEN e.total_score END) AS highest_score,
+    MIN(CASE WHEN e.status = 'submitted' THEN e.total_score END) AS lowest_score
+FROM teams t
+LEFT JOIN jury_assignments ja ON ja.team_id = t.id
+LEFT JOIN evaluations e ON e.team_id = t.id
+GROUP BY t.id, t.team_code, t.team_name, t.organization, t.category, t.track,
+         t.problem_statement_id, t.problem_statement_title, t.registration_status;
+
+-- View: Authoritative Leaderboard with dense ranking
+CREATE OR REPLACE VIEW v_leaderboard AS
+SELECT
+    vsa.*,
+    DENSE_RANK() OVER (
+        ORDER BY vsa.aggregate_score DESC NULLS LAST, vsa.completed_judges DESC, vsa.team_code ASC
+    ) AS overall_rank,
+    DENSE_RANK() OVER (
+        PARTITION BY vsa.category
+        ORDER BY vsa.aggregate_score DESC NULLS LAST, vsa.completed_judges DESC, vsa.team_code ASC
+    ) AS category_rank
+FROM v_team_score_aggregates vsa;
 
 -- ============================================================
 -- DEFAULT SETTINGS
@@ -228,4 +408,4 @@ INSERT INTO scoring_criteria (name, description, max_score, weight, sort_order, 
     ('Impact & Scalability', 'What is the potential impact and scalability of the solution?', 20, 1.0, 3, true),
     ('Implementation / Prototype', 'Quality of the working prototype or implementation', 20, 1.0, 4, true),
     ('Presentation & Demo', 'Effectiveness of the presentation and demonstration', 20, 1.0, 5, true)
-ON CONFLICT DO NOTHING;
+ON CONFLICT (name) DO NOTHING;

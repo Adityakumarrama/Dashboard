@@ -7,24 +7,20 @@ export default function TeamDetail() {
   const { teamId } = useParams();
   const [team, setTeam] = useState(null);
   const [evaluations, setEvaluations] = useState([]);
+  const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     api.get(`/teams/${teamId}`).then(data => {
       setTeam(data.team);
       setEvaluations(data.evaluations || []);
+      setStats(data.stats || null);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, [teamId]);
 
   if (loading) return <div className="skeleton skeleton-card" style={{ height: 300 }} />;
   if (!team) return <div className="empty-state"><div className="empty-state-title">Team not found</div></div>;
-
-  const submitted = evaluations.filter(e => e.status === 'submitted');
-  const scores = submitted.map(e => parseFloat(e.total_score)).filter(s => !isNaN(s));
-  const avg = scores.length > 0 ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1) : '—';
-  const highest = scores.length > 0 ? Math.max(...scores) : '—';
-  const lowest = scores.length > 0 ? Math.min(...scores) : '—';
 
   return (
     <div>
@@ -44,12 +40,12 @@ export default function TeamDetail() {
         </div>
       </div>
 
-      {/* Statistics */}
+      {/* Authoritative PostgreSQL Statistics */}
       <div className="stat-grid">
-        <div className="stat-item"><div className="stat-value">{avg}</div><div className="stat-label">Average Score</div></div>
-        <div className="stat-item"><div className="stat-value">{highest}</div><div className="stat-label">Highest</div></div>
-        <div className="stat-item"><div className="stat-value">{lowest}</div><div className="stat-label">Lowest</div></div>
-        <div className="stat-item"><div className="stat-value">{submitted.length} / {evaluations.length}</div><div className="stat-label">Judges Completed</div></div>
+        <div className="stat-item"><div className="stat-value">{stats?.averageScore ?? '—'}</div><div className="stat-label">Official Aggregate Score</div></div>
+        <div className="stat-item"><div className="stat-value">{stats?.highestScore ?? '—'}</div><div className="stat-label">Highest Score</div></div>
+        <div className="stat-item"><div className="stat-value">{stats?.lowestScore ?? '—'}</div><div className="stat-label">Lowest Score</div></div>
+        <div className="stat-item"><div className="stat-value">{stats?.completedJudges ?? 0} / {evaluations.length}</div><div className="stat-label">Judges Completed</div></div>
       </div>
 
       {/* Evaluations Table */}

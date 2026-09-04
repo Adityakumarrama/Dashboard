@@ -65,14 +65,20 @@ export default function JuryTeamEvaluate() {
 
     const formattedScores = Object.entries(currentData.scores).map(([critId, scVal]) => ({
       criteria_id: critId,
+      criterion_id: critId,
       score: scVal === '' || scVal === null || scVal === undefined ? null : Number(scVal),
       comment: currentData.comments[critId] || null,
     }));
 
-    await api.put(`/evaluations/${evaluation.id}`, {
+    const res = await api.put(`/evaluations/${evaluation.id}`, {
       scores: formattedScores,
       comments: currentData.overallComments,
     });
+
+    if (res.evaluation) {
+      setEvaluation(res.evaluation);
+    }
+    return res;
   }, [evaluation]);
 
   const autosaveData = { scores, comments, overallComments };
@@ -262,13 +268,19 @@ export default function JuryTeamEvaluate() {
       {/* Live Total Banner */}
       <div className="eval-total">
         <div>
-          <div className="eval-total-label">Total Score</div>
+          <div className="eval-total-label">
+            {isSubmitted ? 'Official Total Score' : 'Score Preview'}
+          </div>
           <div style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-secondary)', marginTop: 4 }}>
-            Sum of all criteria
+            {isSubmitted
+              ? 'Authoritative score calculated and locked by PostgreSQL'
+              : 'Temporary UI preview — official score calculated by PostgreSQL upon save'}
           </div>
         </div>
         <div className="eval-total-score">
-          {calculateTotal()} <span style={{ fontSize: 'var(--text-lg)', fontWeight: 400, opacity: 0.7 }}>/ {totalMax}</span>
+          {isSubmitted && evaluation?.total_score !== null
+            ? Number(evaluation.total_score).toFixed(0)
+            : calculateTotal()} <span style={{ fontSize: 'var(--text-lg)', fontWeight: 400, opacity: 0.7 }}>/ {totalMax}</span>
         </div>
       </div>
 

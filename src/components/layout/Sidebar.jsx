@@ -9,6 +9,7 @@ const adminLinks = [
   { to: '/admin/assignments', icon: '📋', label: 'Assignments' },
   { to: '/admin/scoring', icon: '🎯', label: 'Scoring Criteria' },
   { to: '/admin/evaluations', icon: '📝', label: 'Evaluations' },
+  { to: '/admin/leaderboard', icon: '🏆', label: 'Leaderboard' },
   { to: '/admin/import', icon: '📥', label: 'Import Center' },
   { to: '/admin/audit-logs', icon: '📜', label: 'Audit Logs' },
   { to: '/admin/settings', icon: '⚙️', label: 'Settings' },

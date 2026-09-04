@@ -24,6 +24,7 @@ import AdminAssignments from './pages/admin/Assignments';
 import AdminScoringCriteria from './pages/admin/ScoringCriteria';
 import AdminEvaluations from './pages/admin/Evaluations';
 import AdminEvaluationDetail from './pages/admin/EvaluationDetail';
+import AdminLeaderboard from './pages/admin/Leaderboard';
 import AdminImportCenter from './pages/admin/ImportCenter';
 import AdminAuditLogs from './pages/admin/AuditLogs';
 import AdminSettings from './pages/admin/Settings';
@@ -69,6 +70,7 @@ export default function App() {
         <Route path="scoring" element={<AdminScoringCriteria />} />
         <Route path="evaluations" element={<AdminEvaluations />} />
         <Route path="evaluations/:evaluationId" element={<AdminEvaluationDetail />} />
+        <Route path="leaderboard" element={<AdminLeaderboard />} />
         <Route path="import" element={<AdminImportCenter />} />
         <Route path="audit-logs" element={<AdminAuditLogs />} />
         <Route path="settings" element={<AdminSettings />} />
