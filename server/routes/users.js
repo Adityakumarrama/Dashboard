@@ -105,21 +105,28 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields', code: 'VALIDATION_ERROR' });
     }
 
-    if (!['ADMIN', 'JURY'].includes(role)) {
+    const normalizedRole = (role || '').toUpperCase();
+    if (!['ADMIN', 'JURY'].includes(normalizedRole)) {
       return res.status(400).json({ error: 'Invalid role. Must be ADMIN or JURY', code: 'VALIDATION_ERROR' });
     }
 
     // Check duplicates
-    const existingUser = await queryOne('SELECT id FROM users WHERE username = $1 OR email = $2', [username, email]);
+    const existingUser = await queryOne('SELECT id FROM users WHERE username = $1 OR email = $2', [username, email.toLowerCase()]);
     if (existingUser) {
-      return res.status(409).json({ error: 'Username or email already exists', code: 'DUPLICATE_USER' });
+      return res.status(409).json({ error: 'Username or email already exists in system', code: 'DUPLICATE_USER' });
     }
 
     // Create in Supabase Auth
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
-      email,
+      email: email.toLowerCase(),
       password,
       email_confirm: true,
+      user_metadata: {
+        username: sanitize(username),
+        full_name: sanitize(full_name),
+        role: normalizedRole,
+        judge_id: judge_id || null,
+      },
     });
 
     if (authError || !authData?.user) {
@@ -134,7 +141,7 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
       `INSERT INTO users (auth_id, username, email, full_name, role, judge_id)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, username, email, full_name, role, judge_id, status, created_at`,
-      [authData.user.id, sanitize(username), email.toLowerCase(), sanitize(full_name), role, judge_id || null]
+      [authData.user.id, sanitize(username), email.toLowerCase(), sanitize(full_name), normalizedRole, judge_id || null]
     );
 
     if (req.user?.id) {

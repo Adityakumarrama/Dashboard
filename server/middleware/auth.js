@@ -1,5 +1,5 @@
 import supabaseAdmin from '../config/supabase.js';
-import { queryOne } from '../config/database.js';
+import { queryOne, query } from '../config/database.js';
 import { UnauthorizedError } from '../utils/errors.js';
 
 /**
@@ -34,13 +34,24 @@ export async function authenticate(req, res, next) {
     );
 
     if (!dbUser) {
+      const emailPrefix = authUser.email ? authUser.email.split('@')[0] : '';
       dbUser = await queryOne(
-        'SELECT id, auth_id, username, email, full_name, role, judge_id, status FROM users WHERE email = $1 OR username = $1 OR email ILIKE $2 OR username ILIKE $2',
-        [authUser.email, `${authUser.email?.split('@')[0]}%`]
+        `SELECT id, auth_id, username, email, full_name, role, judge_id, status FROM users 
+         WHERE email = $1 
+            OR username = $1 
+            OR email ILIKE $2 
+            OR username ILIKE $2 
+            OR LOWER(email) = LOWER($1) 
+            OR LOWER(username) = LOWER($3)`,
+        [authUser.email, `${emailPrefix}%`, emailPrefix]
       );
       if (dbUser) {
-        await query('UPDATE users SET auth_id = $1 WHERE id = $2', [authUser.id, dbUser.id]);
-        dbUser.auth_id = authUser.id;
+        try {
+          await query('UPDATE users SET auth_id = $1 WHERE id = $2', [authUser.id, dbUser.id]);
+          dbUser.auth_id = authUser.id;
+        } catch (updateErr) {
+          console.warn('Could not update user auth_id:', updateErr.message);
+        }
       }
     }
 

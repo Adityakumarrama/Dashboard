@@ -11,7 +11,7 @@ class ApiClient {
     return {};
   }
 
-  async request(endpoint, options = {}) {
+  async request(endpoint, options = {}, isRetry = false) {
     const headers = {
       'Content-Type': 'application/json',
       ...(await this.getAuthHeaders()),
@@ -34,18 +34,17 @@ class ApiClient {
 
     const response = await fetch(`${API_BASE}${endpoint}`, config);
 
-    if (response.status === 401) {
-      // Try to refresh session
-      const { error } = await supabase.auth.refreshSession();
-      if (error) {
-        window.location.href = '/login';
-        throw new Error('Session expired');
+    if (response.status === 401 && !isRetry && endpoint !== '/auth/sync') {
+      try {
+        // Try to refresh session once
+        const { data, error } = await supabase.auth.refreshSession();
+        if (error || !data?.session) {
+          throw new Error('Session expired');
+        }
+        return this.request(endpoint, options, true);
+      } catch {
+        return this.handleResponse(response);
       }
-      // Retry with new token
-      const newHeaders = await this.getAuthHeaders();
-      config.headers = { ...headers, ...newHeaders };
-      const retryResponse = await fetch(`${API_BASE}${endpoint}`, config);
-      return this.handleResponse(retryResponse);
     }
 
     return this.handleResponse(response);
