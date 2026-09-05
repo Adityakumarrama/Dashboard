@@ -13,13 +13,27 @@ export function AuthProvider({ children }) {
 
   // Initialize auth state
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session: s } }) => {
+    supabase.auth.getSession().then(({ data: { session: s }, error }) => {
+      if (error) {
+        console.warn('Initial session check error:', error.message);
+        try { supabase.auth.signOut({ scope: 'local' }); } catch {}
+        setSession(null);
+        setUser(null);
+        setLoading(false);
+        return;
+      }
       setSession(s);
       if (s) {
         syncUser(s);
       } else {
         setLoading(false);
       }
+    }).catch(err => {
+      console.warn('Failed to retrieve session:', err);
+      try { supabase.auth.signOut({ scope: 'local' }); } catch {}
+      setSession(null);
+      setUser(null);
+      setLoading(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
@@ -93,9 +107,18 @@ export function AuthProvider({ children }) {
   }, []);
 
   const logout = useCallback(async () => {
-    await supabase.auth.signOut();
+    try {
+      await supabase.auth.signOut({ scope: 'local' });
+    } catch {}
     setUser(null);
     setSession(null);
+    try {
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith('sb-')) {
+          localStorage.removeItem(k);
+        }
+      }
+    } catch {}
     navigate('/login');
   }, [navigate]);
 

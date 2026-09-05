@@ -589,6 +589,11 @@ router.put('/:id', authenticate, requireAny, async (req, res) => {
  */
 router.post('/:id/submit', authenticate, requireAny, async (req, res) => {
   try {
+    const { scores, comments } = req.body;
+    // CRITICAL: If scores were passed directly with the submit request, save them first
+    if (Array.isArray(scores) && scores.length > 0) {
+      await saveEvaluationScores(req.params.id, scores, comments, req.user);
+    }
     const result = await submitEvaluation(req.params.id, req.user, getClientIp(req));
     res.json({
       evaluation: result.evaluation,

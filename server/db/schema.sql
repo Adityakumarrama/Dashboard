@@ -57,17 +57,53 @@ CREATE TABLE IF NOT EXISTS teams (
 CREATE TABLE IF NOT EXISTS team_members (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    team_code TEXT,
     member_number INTEGER,
     name TEXT NOT NULL,
     email TEXT,
     enrollment_number TEXT,
     gender TEXT,
     department TEXT,
+    course TEXT,
+    contact TEXT,
+    academic_year INTEGER,
     is_girl_member BOOLEAN DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_team_members_team_id ON team_members(team_id);
+CREATE INDEX IF NOT EXISTS idx_team_members_team_code ON team_members(team_code);
+
+-- ============================================================
+-- MASTER TEAM MEMBER DETAILS (Unified participant directory)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS master_team_member_details (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    team_id UUID NOT NULL REFERENCES teams(id) ON UPDATE CASCADE ON DELETE CASCADE,
+    team_code TEXT NOT NULL,
+    member_number INTEGER,
+    member_name TEXT NOT NULL,
+    member_email TEXT,
+    member_enrolment TEXT,
+    member_contact TEXT,
+    member_department TEXT,
+    member_course TEXT,
+    member_year INTEGER,
+    gender TEXT,
+    is_girl_member BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT fk_team_id FOREIGN KEY (team_id) REFERENCES teams(id) ON UPDATE CASCADE ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_member_team_id ON master_team_member_details(team_id);
+CREATE INDEX IF NOT EXISTS idx_team_member_team_code ON master_team_member_details(team_code);
+CREATE INDEX IF NOT EXISTS idx_team_member_email ON master_team_member_details(member_email);
+CREATE INDEX IF NOT EXISTS idx_team_member_enrolment ON master_team_member_details(member_enrolment);
+CREATE INDEX IF NOT EXISTS idx_team_member_contact ON master_team_member_details(member_contact);
+CREATE INDEX IF NOT EXISTS idx_team_member_department ON master_team_member_details(member_department);
+CREATE INDEX IF NOT EXISTS idx_team_member_course ON master_team_member_details(member_course);
+
 
 -- ============================================================
 -- JURY ASSIGNMENTS

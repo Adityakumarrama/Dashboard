@@ -43,7 +43,16 @@ class ApiClient {
           throw new Error('Session expired');
         }
         return this.request(endpoint, options, true);
-      } catch {
+      } catch (refreshErr) {
+        // If refresh token is revoked/invalidated, clean up dead tokens from storage
+        try {
+          await supabase.auth.signOut({ scope: 'local' });
+          for (const k of Object.keys(localStorage)) {
+            if (k.startsWith('sb-')) {
+              localStorage.removeItem(k);
+            }
+          }
+        } catch {}
         return this.handleResponse(response);
       }
     }

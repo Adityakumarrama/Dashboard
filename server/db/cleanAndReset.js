@@ -26,6 +26,8 @@ async function cleanAndReset() {
       TRUNCATE TABLE import_errors CASCADE;
       TRUNCATE TABLE imports CASCADE;
       TRUNCATE TABLE audit_logs CASCADE;
+      TRUNCATE TABLE master_team_member_details CASCADE;
+      TRUNCATE TABLE team_members CASCADE;
       TRUNCATE TABLE teams CASCADE;
       TRUNCATE TABLE users CASCADE;
     `);

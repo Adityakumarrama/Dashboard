@@ -135,6 +135,13 @@ export default function JuryTeamEvaluate() {
         comment: comments[critId] || null,
       }));
 
+      // 1. Explicitly save the scores to guarantee database persistence
+      await api.put(`/evaluations/${evaluation.id}`, {
+        scores: formattedScores,
+        comments: overallComments,
+      });
+
+      // 2. Submit the official evaluation
       await api.post(`/evaluations/${evaluation.id}/submit`, {
         scores: formattedScores,
         comments: overallComments,
@@ -239,8 +246,13 @@ export default function JuryTeamEvaluate() {
                     Enrollment: <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-primary)' }}>{m.enrollment_number || '—'}</span>
                   </div>
                   <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>
-                    Dept: {m.department || '—'}
+                    Dept: {m.department || '—'} {m.course || m.member_course ? `• ${m.course || m.member_course}` : ''}
                   </div>
+                  {(m.contact || m.member_contact) && (
+                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>
+                      Contact: <span style={{ fontFamily: 'var(--font-mono)' }}>{m.contact || m.member_contact}</span>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -253,9 +265,26 @@ export default function JuryTeamEvaluate() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-6)' }}>
           <h3 className="card-title">Rubric Criteria Scoring</h3>
           {!isSubmitted && (
-            <div className={`autosave-indicator ${saveStatus}`}>
-              <span className="autosave-dot" />
-              <span>{statusText}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+              <div className={`autosave-indicator ${saveStatus}`}>
+                <span className="autosave-dot" />
+                <span>{statusText}</span>
+              </div>
+              <button 
+                type="button" 
+                className="btn btn-ghost btn-sm" 
+                onClick={async () => {
+                  try {
+                    await forceSave();
+                    toast.success('Draft scores saved!');
+                  } catch (e) {
+                    toast.error(e.message || 'Failed to save draft');
+                  }
+                }}
+                disabled={saveStatus === 'saving'}
+              >
+                💾 Save Draft
+              </button>
             </div>
           )}
         </div>

@@ -91,6 +91,7 @@ function parseRamaRow(rawCells, headers, index, usedCodes) {
       enrollment_number: getVal(12),
       gender: getVal(13) || 'Female',
       department: getVal(14) || department,
+      course: course || null,
       is_girl_member: true,
     });
   }
@@ -105,6 +106,7 @@ function parseRamaRow(rawCells, headers, index, usedCodes) {
       email: getVal(17),
       enrollment_number: getVal(18),
       department: getVal(19) || department,
+      course: course || null,
       is_girl_member: false,
     });
   }
@@ -119,6 +121,7 @@ function parseRamaRow(rawCells, headers, index, usedCodes) {
       email: getVal(22),
       enrollment_number: getVal(23),
       department: getVal(24) || department,
+      course: course || null,
       is_girl_member: false,
     });
   }
@@ -133,6 +136,7 @@ function parseRamaRow(rawCells, headers, index, usedCodes) {
       gender: getVal(27) || 'Male',
       enrollment_number: getVal(28),
       department: getVal(29) || department,
+      course: course || null,
       is_girl_member: false,
     });
   }
@@ -146,6 +150,7 @@ function parseRamaRow(rawCells, headers, index, usedCodes) {
       email: getVal(31),
       enrollment_number: getVal(32),
       department: getVal(33) || department,
+      course: course || null,
       gender: 'Male',
       is_girl_member: false,
     });
@@ -524,30 +529,85 @@ router.post('/confirm', authenticate, requireAdmin, async (req, res) => {
           if (currentTeamId) insertedTeams.push(currentTeamId);
         }
 
-        // Insert/update team_members relational rows
+        // Insert/update relational rows into master_team_member_details and team_members
         if (currentTeamId && Array.isArray(teamPayload.team_members) && teamPayload.team_members.length > 0) {
           try {
             await query('DELETE FROM team_members WHERE team_id = $1', [currentTeamId]);
+            await query('DELETE FROM master_team_member_details WHERE team_id = $1', [currentTeamId]);
+
             for (const m of teamPayload.team_members) {
+              const mContact = m.contact || m.phone || null;
+              const mCourse = m.course || teamPayload.course || null;
+              const mDept = m.department || teamPayload.department || null;
+              const mYear = m.member_year || m.year || null;
+
+              // Insert into team_members
               await query(
-                `INSERT INTO team_members (team_id, member_number, name, email, enrollment_number, gender, department, is_girl_member)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-                [currentTeamId, m.member_number, m.name, m.email || null, m.enrollment_number || null, m.gender || null, m.department || null, !!m.is_girl_member]
+                `INSERT INTO team_members (
+                  team_id, team_code, member_number, name, email, 
+                  enrollment_number, gender, department, course, contact, academic_year, is_girl_member
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+                [
+                  currentTeamId, teamPayload.team_code, m.member_number, m.name, 
+                  m.email || null, m.enrollment_number || null, m.gender || null, 
+                  mDept, mCourse, mContact, mYear, !!m.is_girl_member
+                ]
+              );
+
+              // Insert into master_team_member_details
+              await query(
+                `INSERT INTO master_team_member_details (
+                  team_id, team_code, member_number, member_name, member_email, 
+                  member_enrolment, member_contact, member_department, member_course, member_year,
+                  gender, is_girl_member
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+                [
+                  currentTeamId, teamPayload.team_code, m.member_number, m.name, 
+                  m.email || null, m.enrollment_number || null, mContact, 
+                  mDept, mCourse, mYear, m.gender || null, !!m.is_girl_member
+                ]
               );
             }
-          } catch {
-            await supabaseAdmin.from('team_members').delete().eq('team_id', currentTeamId);
-            const memberInserts = teamPayload.team_members.map(m => ({
-              team_id: currentTeamId,
-              member_number: m.member_number,
-              name: m.name,
-              email: m.email || null,
-              enrollment_number: m.enrollment_number || null,
-              gender: m.gender || null,
-              department: m.department || null,
-              is_girl_member: !!m.is_girl_member,
-            }));
-            await supabaseAdmin.from('team_members').insert(memberInserts);
+          } catch (mErr) {
+            console.warn('Postgres member relational insert fallback to Supabase REST:', mErr.message);
+            try {
+              await supabaseAdmin.from('team_members').delete().eq('team_id', currentTeamId);
+              await supabaseAdmin.from('master_team_member_details').delete().eq('team_id', currentTeamId);
+
+              const memberInserts = teamPayload.team_members.map(m => ({
+                team_id: currentTeamId,
+                team_code: teamPayload.team_code,
+                member_number: m.member_number,
+                name: m.name,
+                email: m.email || null,
+                enrollment_number: m.enrollment_number || null,
+                gender: m.gender || null,
+                department: m.department || teamPayload.department || null,
+                course: m.course || teamPayload.course || null,
+                contact: m.contact || m.phone || null,
+                academic_year: m.member_year || m.year || null,
+                is_girl_member: !!m.is_girl_member,
+              }));
+              await supabaseAdmin.from('team_members').insert(memberInserts);
+
+              const masterInserts = teamPayload.team_members.map(m => ({
+                team_id: currentTeamId,
+                team_code: teamPayload.team_code,
+                member_number: m.member_number,
+                member_name: m.name,
+                member_email: m.email || null,
+                member_enrolment: m.enrollment_number || null,
+                member_contact: m.contact || m.phone || null,
+                member_department: m.department || teamPayload.department || null,
+                member_course: m.course || teamPayload.course || null,
+                member_year: m.member_year || m.year || null,
+                gender: m.gender || null,
+                is_girl_member: !!m.is_girl_member,
+              }));
+              await supabaseAdmin.from('master_team_member_details').insert(masterInserts);
+            } catch (supaErr) {
+              console.warn('Supabase member relational insert fallback error:', supaErr.message);
+            }
           }
         }
       } catch (e) {

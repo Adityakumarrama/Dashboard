@@ -34,8 +34,8 @@ export async function saveEvaluationScores(evaluationId, scores, comments, user)
         throw err;
       }
 
-      // Locked check
-      if (evaluation.status === 'submitted') {
+      // Locked check: allow ADMIN role to update/override scores directly
+      if (evaluation.status === 'submitted' && user.role !== 'ADMIN') {
         const err = new Error('Cannot edit submitted evaluation. Contact an administrator to reopen.');
         err.code = 'EVALUATION_LOCKED';
         err.status = 400;
@@ -112,6 +112,16 @@ export async function saveEvaluationScores(evaluationId, scores, comments, user)
       // 5. Invoke authoritative PostgreSQL calculation function
       await client.query('SELECT * FROM fn_calculate_evaluation_total($1)', [evaluationId]);
 
+      // 5b. Auto-resubmit reopened evaluations when admin saves scores
+      if (user.role === 'ADMIN' && (evaluation.status === 'reopened' || evaluation.status === 'submitted')) {
+        await client.query(
+          `UPDATE evaluations
+           SET status = 'submitted', locked_at = NOW(), submitted_at = COALESCE(submitted_at, NOW()), updated_at = NOW()
+           WHERE id = $1`,
+          [evaluationId]
+        );
+      }
+
       // 6. Fetch authoritative updated evaluation and criterion scores
       const updatedEvalRes = await client.query(
         `SELECT e.*, t.team_code, t.team_name, u.full_name as judge_name, u.judge_id
@@ -133,6 +143,27 @@ export async function saveEvaluationScores(evaluationId, scores, comments, user)
         [evaluationId]
       );
       updatedEvaluation.scores = scoresRes.rows;
+
+      if (user.role === 'ADMIN') {
+        try {
+          const actionType = evaluation.status === 'reopened'
+            ? 'evaluation.admin_resubmit'
+            : 'evaluation.admin_score_update';
+          await logAction(
+            user.id,
+            actionType,
+            'evaluation',
+            evaluationId,
+            {
+              team_code: updatedEvaluation.team_code,
+              total_score: updatedEvaluation.total_score,
+              previous_status: evaluation.status,
+              new_status: updatedEvaluation.status,
+            },
+            null
+          );
+        } catch {}
+      }
 
       return updatedEvaluation;
     });
@@ -163,7 +194,7 @@ export async function saveEvaluationScores(evaluationId, scores, comments, user)
       throw e;
     }
 
-    if (evaluation.status === 'submitted') {
+    if (evaluation.status === 'submitted' && user.role !== 'ADMIN') {
       const e = new Error('Cannot edit submitted evaluation. Contact an administrator to reopen.');
       e.status = 400;
       e.code = 'EVALUATION_LOCKED';
@@ -232,15 +263,25 @@ export async function saveEvaluationScores(evaluationId, scores, comments, user)
     const weightedScore = sumWeight > 0 ? Number((weightedSum / sumWeight).toFixed(2)) : 0;
     const normalizedScore = sumMax > 0 ? Number(((totalScore / sumMax) * 100).toFixed(4)) : 0;
 
+    // Auto-resubmit reopened evaluations when admin saves scores
+    const updatePayload = {
+      total_score: totalScore,
+      weighted_score: weightedScore,
+      normalized_score: normalizedScore,
+      comments: comments !== undefined ? comments : evaluation.comments,
+      updated_at: new Date().toISOString(),
+    };
+    if (user.role === 'ADMIN' && (evaluation.status === 'reopened' || evaluation.status === 'submitted')) {
+      updatePayload.status = 'submitted';
+      updatePayload.locked_at = new Date().toISOString();
+      if (!evaluation.submitted_at) {
+        updatePayload.submitted_at = new Date().toISOString();
+      }
+    }
+
     const { data: updatedEval, error: updateErr } = await supabaseAdmin
       .from('evaluations')
-      .update({
-        total_score: totalScore,
-        weighted_score: weightedScore,
-        normalized_score: normalizedScore,
-        comments: comments !== undefined ? comments : evaluation.comments,
-        updated_at: new Date().toISOString(),
-      })
+      .update(updatePayload)
       .eq('id', evaluationId)
       .select('*, teams(team_code, team_name), users(full_name, judge_id)')
       .single();

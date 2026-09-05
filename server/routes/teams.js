@@ -87,13 +87,52 @@ router.get('/', authenticate, requireAny, async (req, res) => {
 async function getTeamMembersList(teamId, fallbackJson) {
   let members = [];
   try {
-    members = await queryAll('SELECT * FROM team_members WHERE team_id = $1 ORDER BY member_number ASC', [teamId]);
+    members = await queryAll(
+      `SELECT 
+        id, team_id, team_code, member_number,
+        COALESCE(member_name, name) as name,
+        COALESCE(member_email, email) as email,
+        COALESCE(member_enrolment, enrollment_number) as enrollment_number,
+        COALESCE(member_contact, contact) as contact,
+        COALESCE(member_department, department) as department,
+        COALESCE(member_course, course) as course,
+        COALESCE(member_year, academic_year) as academic_year,
+        gender, is_girl_member
+       FROM master_team_member_details 
+       WHERE team_id = $1 
+       ORDER BY member_number ASC NULLS LAST`,
+      [teamId]
+    );
   } catch {
     try {
-      const { data } = await supabaseAdmin.from('team_members').select('*').eq('team_id', teamId).order('member_number', { ascending: true });
-      members = data || [];
+      const { data } = await supabaseAdmin.from('master_team_member_details').select('*').eq('team_id', teamId).order('member_number', { ascending: true });
+      if (data && data.length > 0) {
+        members = data.map(m => ({
+          ...m,
+          name: m.member_name || m.name,
+          email: m.member_email || m.email,
+          enrollment_number: m.member_enrolment || m.enrollment_number,
+          contact: m.member_contact || m.contact,
+          department: m.member_department || m.department,
+          course: m.member_course || m.course,
+          academic_year: m.member_year || m.academic_year,
+        }));
+      }
     } catch {}
   }
+
+  // Fallback to team_members if master_team_member_details is empty
+  if (!members || members.length === 0) {
+    try {
+      members = await queryAll('SELECT * FROM team_members WHERE team_id = $1 ORDER BY member_number ASC', [teamId]);
+    } catch {
+      try {
+        const { data } = await supabaseAdmin.from('team_members').select('*').eq('team_id', teamId).order('member_number', { ascending: true });
+        members = data || [];
+      } catch {}
+    }
+  }
+
   if (members && members.length > 0) {
     return members;
   }
@@ -174,6 +213,60 @@ router.get('/lookup/:teamCode', authenticate, requireAny, async (req, res) => {
   } catch (error) {
     console.error('Team lookup error:', error);
     res.status(500).json({ error: error.message || 'Failed to lookup team', code: 'INTERNAL_ERROR' });
+  }
+});
+
+/**
+ * GET /api/teams/members/search
+ * Global participant directory search by enrollment, name, email, contact, or team code
+ */
+router.get('/members/search', authenticate, requireAny, async (req, res) => {
+  try {
+    const rawQ = req.query.q || '';
+    const q = sanitize(String(rawQ).trim());
+    if (!q) {
+      return res.json({ members: [] });
+    }
+
+    let members = [];
+    try {
+      members = await queryAll(
+        `SELECT 
+          m.id, m.team_id, m.team_code, m.member_number,
+          COALESCE(m.member_name, m.name) as member_name,
+          COALESCE(m.member_email, m.email) as member_email,
+          COALESCE(m.member_enrolment, m.enrollment_number) as member_enrolment,
+          COALESCE(m.member_contact, m.contact) as member_contact,
+          COALESCE(m.member_department, m.department) as member_department,
+          COALESCE(m.member_course, m.course) as member_course,
+          COALESCE(m.member_year, m.academic_year) as member_year,
+          m.gender, m.is_girl_member,
+          t.team_name, t.problem_statement_id, t.category, t.track
+        FROM master_team_member_details m
+        LEFT JOIN teams t ON m.team_id = t.id
+        WHERE m.member_enrolment ILIKE $1 
+           OR m.member_name ILIKE $1 
+           OR m.member_email ILIKE $1 
+           OR m.member_contact ILIKE $1 
+           OR m.team_code ILIKE $1
+        ORDER BY m.team_code, m.member_number
+        LIMIT 50`,
+        [`%${q}%`]
+      );
+    } catch (pgErr) {
+      console.warn('Postgres query failed in member search, falling back to Supabase REST:', pgErr.message);
+      const { data } = await supabaseAdmin
+        .from('master_team_member_details')
+        .select('*, teams(team_name, problem_statement_id, category, track)')
+        .or(`member_enrolment.ilike.%${q}%,member_name.ilike.%${q}%,member_email.ilike.%${q}%,member_contact.ilike.%${q}%,team_code.ilike.%${q}%`)
+        .limit(50);
+      members = data || [];
+    }
+
+    res.json({ members: members || [] });
+  } catch (error) {
+    console.error('Member search error:', error);
+    res.status(500).json({ error: error.message || 'Failed to search members', code: 'INTERNAL_ERROR' });
   }
 });
 
@@ -369,30 +462,78 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
       team = data;
     }
 
-    // Sync team_members table
+    // Sync team_members and master_team_member_details tables
     if (team?.id && Array.isArray(teamPayload.team_members) && teamPayload.team_members.length > 0) {
       try {
         await query('DELETE FROM team_members WHERE team_id = $1', [team.id]);
+        await query('DELETE FROM master_team_member_details WHERE team_id = $1', [team.id]);
         for (const m of teamPayload.team_members) {
+          const mContact = m.contact || m.phone || null;
+          const mCourse = m.course || teamPayload.course || null;
+          const mDept = m.department || teamPayload.department || null;
+          const mYear = m.member_year || m.year || null;
+
           await query(
-            `INSERT INTO team_members (team_id, member_number, name, email, enrollment_number, gender, department, is_girl_member)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-            [team.id, m.member_number, m.name, m.email || null, m.enrollment_number || null, m.gender || null, m.department || null, !!m.is_girl_member]
+            `INSERT INTO team_members (
+              team_id, team_code, member_number, name, email, 
+              enrollment_number, gender, department, course, contact, academic_year, is_girl_member
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+            [
+              team.id, team.team_code, m.member_number, m.name, 
+              m.email || null, m.enrollment_number || null, m.gender || null, 
+              mDept, mCourse, mContact, mYear, !!m.is_girl_member
+            ]
+          );
+
+          await query(
+            `INSERT INTO master_team_member_details (
+              team_id, team_code, member_number, member_name, member_email, 
+              member_enrolment, member_contact, member_department, member_course, member_year,
+              gender, is_girl_member
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+            [
+              team.id, team.team_code, m.member_number, m.name, 
+              m.email || null, m.enrollment_number || null, mContact, 
+              mDept, mCourse, mYear, m.gender || null, !!m.is_girl_member
+            ]
           );
         }
       } catch {
-        await supabaseAdmin.from('team_members').delete().eq('team_id', team.id);
-        const memberRows = teamPayload.team_members.map(m => ({
-          team_id: team.id,
-          member_number: m.member_number,
-          name: m.name,
-          email: m.email || null,
-          enrollment_number: m.enrollment_number || null,
-          gender: m.gender || null,
-          department: m.department || null,
-          is_girl_member: !!m.is_girl_member,
-        }));
-        await supabaseAdmin.from('team_members').insert(memberRows);
+        try {
+          await supabaseAdmin.from('team_members').delete().eq('team_id', team.id);
+          await supabaseAdmin.from('master_team_member_details').delete().eq('team_id', team.id);
+          const memberRows = teamPayload.team_members.map(m => ({
+            team_id: team.id,
+            team_code: team.team_code,
+            member_number: m.member_number,
+            name: m.name,
+            email: m.email || null,
+            enrollment_number: m.enrollment_number || null,
+            gender: m.gender || null,
+            department: m.department || null,
+            course: m.course || null,
+            contact: m.contact || null,
+            academic_year: m.member_year || m.year || null,
+            is_girl_member: !!m.is_girl_member,
+          }));
+          await supabaseAdmin.from('team_members').insert(memberRows);
+
+          const masterRows = teamPayload.team_members.map(m => ({
+            team_id: team.id,
+            team_code: team.team_code,
+            member_number: m.member_number,
+            member_name: m.name,
+            member_email: m.email || null,
+            member_enrolment: m.enrollment_number || null,
+            member_contact: m.contact || null,
+            member_department: m.department || null,
+            member_course: m.course || null,
+            member_year: m.member_year || m.year || null,
+            gender: m.gender || null,
+            is_girl_member: !!m.is_girl_member,
+          }));
+          await supabaseAdmin.from('master_team_member_details').insert(masterRows);
+        } catch {}
       }
     }
 
@@ -539,32 +680,80 @@ router.put('/:id', authenticate, requireAdmin, async (req, res) => {
       team = data;
     }
 
-    // Sync team_members table if provided
+    // Sync team_members and master_team_member_details tables if provided
     if (team?.id && Array.isArray(team_members)) {
       try {
         await query('DELETE FROM team_members WHERE team_id = $1', [team.id]);
+        await query('DELETE FROM master_team_member_details WHERE team_id = $1', [team.id]);
         for (const m of team_members) {
+          const mContact = m.contact || m.phone || null;
+          const mCourse = m.course || team.course || null;
+          const mDept = m.department || team.department || null;
+          const mYear = m.member_year || m.year || null;
+
           await query(
-            `INSERT INTO team_members (team_id, member_number, name, email, enrollment_number, gender, department, is_girl_member)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-            [team.id, m.member_number, m.name, m.email || null, m.enrollment_number || null, m.gender || null, m.department || null, !!m.is_girl_member]
+            `INSERT INTO team_members (
+              team_id, team_code, member_number, name, email, 
+              enrollment_number, gender, department, course, contact, academic_year, is_girl_member
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+            [
+              team.id, team.team_code, m.member_number, m.name, 
+              m.email || null, m.enrollment_number || null, m.gender || null, 
+              mDept, mCourse, mContact, mYear, !!m.is_girl_member
+            ]
+          );
+
+          await query(
+            `INSERT INTO master_team_member_details (
+              team_id, team_code, member_number, member_name, member_email, 
+              member_enrolment, member_contact, member_department, member_course, member_year,
+              gender, is_girl_member
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+            [
+              team.id, team.team_code, m.member_number, m.name, 
+              m.email || null, m.enrollment_number || null, mContact, 
+              mDept, mCourse, mYear, m.gender || null, !!m.is_girl_member
+            ]
           );
         }
       } catch {
-        await supabaseAdmin.from('team_members').delete().eq('team_id', team.id);
-        if (team_members.length > 0) {
-          const memberRows = team_members.map(m => ({
-            team_id: team.id,
-            member_number: m.member_number,
-            name: m.name,
-            email: m.email || null,
-            enrollment_number: m.enrollment_number || null,
-            gender: m.gender || null,
-            department: m.department || null,
-            is_girl_member: !!m.is_girl_member,
-          }));
-          await supabaseAdmin.from('team_members').insert(memberRows);
-        }
+        try {
+          await supabaseAdmin.from('team_members').delete().eq('team_id', team.id);
+          await supabaseAdmin.from('master_team_member_details').delete().eq('team_id', team.id);
+          if (team_members.length > 0) {
+            const memberRows = team_members.map(m => ({
+              team_id: team.id,
+              team_code: team.team_code,
+              member_number: m.member_number,
+              name: m.name,
+              email: m.email || null,
+              enrollment_number: m.enrollment_number || null,
+              gender: m.gender || null,
+              department: m.department || null,
+              course: m.course || null,
+              contact: m.contact || null,
+              academic_year: m.member_year || m.year || null,
+              is_girl_member: !!m.is_girl_member,
+            }));
+            await supabaseAdmin.from('team_members').insert(memberRows);
+
+            const masterRows = team_members.map(m => ({
+              team_id: team.id,
+              team_code: team.team_code,
+              member_number: m.member_number,
+              member_name: m.name,
+              member_email: m.email || null,
+              member_enrolment: m.enrollment_number || null,
+              member_contact: m.contact || null,
+              member_department: m.department || null,
+              member_course: m.course || null,
+              member_year: m.member_year || m.year || null,
+              gender: m.gender || null,
+              is_girl_member: !!m.is_girl_member,
+            }));
+            await supabaseAdmin.from('master_team_member_details').insert(masterRows);
+          }
+        } catch {}
       }
     }
 
@@ -604,6 +793,7 @@ router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
 
     // Explicitly cascade delete from dependent tables to guarantee safe deletion
     try {
+      await query('DELETE FROM master_team_member_details WHERE team_id = $1', [req.params.id]);
       await query('DELETE FROM team_members WHERE team_id = $1', [req.params.id]);
       await query('DELETE FROM evaluation_scores WHERE team_id = $1', [req.params.id]);
       await query('DELETE FROM evaluation_score_history WHERE team_id = $1', [req.params.id]);
@@ -612,6 +802,7 @@ router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
       await query('DELETE FROM teams WHERE id = $1', [req.params.id]);
     } catch (pgErr) {
       console.warn('Postgres delete failed in DELETE /api/teams/:id, falling back to Supabase REST client:', pgErr.message);
+      await supabaseAdmin.from('master_team_member_details').delete().eq('team_id', req.params.id);
       await supabaseAdmin.from('team_members').delete().eq('team_id', req.params.id);
       await supabaseAdmin.from('evaluation_scores').delete().eq('team_id', req.params.id);
       await supabaseAdmin.from('evaluation_score_history').delete().eq('team_id', req.params.id);

@@ -164,9 +164,21 @@ export default function TeamDetail() {
                       <span className="roster-card-meta-label">Gender:</span>
                       <span>{m.gender || '—'}</span>
                     </div>
+                    {(m.course || m.member_course) && (
+                      <div className="roster-card-meta-item">
+                        <span className="roster-card-meta-label">Course:</span>
+                        <span>{m.course || m.member_course} {(m.academic_year || m.member_year) ? `(Yr ${m.academic_year || m.member_year})` : ''}</span>
+                      </div>
+                    )}
+                    {(m.contact || m.member_contact) && (
+                      <div className="roster-card-meta-item">
+                        <span className="roster-card-meta-label">Phone:</span>
+                        <span style={{ fontFamily: 'var(--font-mono)' }}>{m.contact || m.member_contact}</span>
+                      </div>
+                    )}
                     <div style={{ marginTop: 'var(--space-2)', paddingTop: 'var(--space-2)', borderTop: '1px solid var(--color-border-light)' }}>
                       <span className="roster-card-meta-label">Rama Email:</span>
-                      <div style={{ wordBreak: 'break-all', fontSize: 'var(--text-xs)', marginTop: 2 }}>{m.email || '—'}</div>
+                      <div style={{ wordBreak: 'break-all', fontSize: 'var(--text-xs)', marginTop: 2 }}>{m.email || m.member_email || '—'}</div>
                     </div>
                   </div>
                 </div>
