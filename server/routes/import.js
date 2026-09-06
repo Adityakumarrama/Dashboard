@@ -40,30 +40,55 @@ function isRamaFormat(headers) {
   const joined = headers.map(h => String(h || '').toLowerCase().trim()).join(' ');
   return (
     joined.includes('member 1') &&
-    (joined.includes('rama official') || joined.includes('problem code') || joined.includes('team leader name') || joined.includes('enrollment number'))
+    (joined.includes('rama official') || joined.includes('problem code') || joined.includes('team leader') || joined.includes('enrollment number') || joined.includes('team name'))
   );
 }
 
 function parseRamaRow(rawCells, headers, index, usedCodes) {
-  const getVal = (idx) => sanitize(String(rawCells[idx] || '').trim());
+  const get = (idx) => (idx >= 0 && idx < rawCells.length ? sanitize(String(rawCells[idx] || '').trim()) : '');
 
-  // Problem Code (SIH)
-  let problemCode = getVal(5);
-  // Team Name
-  const teamName = getVal(3) || `Team ${index + 1}`;
-  // Problem Statement
-  const problemTitle = getVal(6) || '';
-  // Submitter Email
-  const submitterEmail = getVal(0) || '';
-  // Department & Course
-  const department = getVal(1) || '';
-  const course = getVal(2) || '';
+  // Dynamic column finder by pattern matching
+  const findCol = (pattern, excludePattern = null) => {
+    if (!Array.isArray(headers)) return -1;
+    return headers.findIndex(h => {
+      const s = String(h || '').toLowerCase().trim();
+      if (!s) return false;
+      const match = Array.isArray(pattern) ? pattern.some(p => s.includes(p.toLowerCase())) : s.includes(pattern.toLowerCase());
+      if (!match) return false;
+      if (excludePattern) {
+        const ex = Array.isArray(excludePattern) ? excludePattern.some(p => s.includes(p.toLowerCase())) : s.includes(excludePattern.toLowerCase());
+        if (ex) return false;
+      }
+      return true;
+    });
+  };
 
-  // Team Leader
-  const leaderContact = getVal(4) || '';
-  const leaderName = getVal(7) || '';
-  const leaderEmail = getVal(8) || '';
-  const leaderEnroll = getVal(9) || '';
+  // Find columns dynamically
+  const teamNameCol = findCol(['team name', 'team_name']);
+  const teamCodeCol = findCol(['teamcode', 'team code', 'problem code']);
+  const problemTitleCol = findCol(['problem statement', 'ps_title']);
+  const submitterEmailCol = findCol(['email address', 'submitter email'], ['member', 'leader']);
+  const departmentCol = findCol(['department', 'dept'], ['member']);
+  const courseCol = findCol(['course', 'degree', 'program']);
+  const yearCol = findCol(['year', 'academic year']);
+  const leaderContactCol = findCol(['leader contact', 'contact number', 'leader phone']);
+  const leaderNameCol = findCol(['team leader name', 'leader name', 'team leader']);
+  const leaderEmailCol = findCol(['official email id leader', 'leader email', 'leader official email']);
+  const leaderEnrollCol = findCol(['enrollment number (team leader)', 'leader enrollment', 'enrollment number leader']);
+
+  // Extract values with legacy index fallbacks
+  const teamName = get(teamNameCol >= 0 ? teamNameCol : 3) || `Team ${index + 1}`;
+  let problemCode = get(teamCodeCol >= 0 ? teamCodeCol : 5);
+  const problemTitle = get(problemTitleCol >= 0 ? problemTitleCol : 6);
+  const submitterEmail = get(submitterEmailCol >= 0 ? submitterEmailCol : 0);
+  const department = get(departmentCol >= 0 ? departmentCol : 1);
+  const course = get(courseCol >= 0 ? courseCol : 2);
+  const rawYear = get(yearCol);
+  const parsedYear = rawYear ? parseInt(String(rawYear).replace(/[^0-9]/g, ''), 10) || null : null;
+  const leaderContact = get(leaderContactCol >= 0 ? leaderContactCol : 4);
+  const leaderName = get(leaderNameCol >= 0 ? leaderNameCol : 7);
+  const leaderEmail = get(leaderEmailCol >= 0 ? leaderEmailCol : 8);
+  const leaderEnroll = get(leaderEnrollCol >= 0 ? leaderEnrollCol : 9);
 
   // Clean and format team code
   let teamCode = problemCode ? problemCode.replace(/[^a-zA-Z0-9_-]/g, '-').toUpperCase() : `SIH2026-TEAM-${index + 1}`;
@@ -78,81 +103,60 @@ function parseRamaRow(rawCells, headers, index, usedCodes) {
   }
   usedCodes.add(uniqueCode.toLowerCase());
 
-  // Extract up to 5 members
+  // Locate Member 1 to 5 starting columns
+  const mIndices = [];
+  for (let m = 1; m <= 5; m++) {
+    const idx = headers.findIndex(h => new RegExp(`member\\s*${m}`, 'i').test(String(h || '')));
+    mIndices.push(idx);
+  }
+
+  const legacyMemberStarts = [10, 15, 20, 25, 30];
   const members = [];
 
-  // Member 1 (Girl)
-  const m1Name = getVal(10);
-  if (m1Name) {
-    members.push({
-      member_number: 1,
-      name: m1Name,
-      email: getVal(11),
-      enrollment_number: getVal(12),
-      gender: getVal(13) || 'Female',
-      department: getVal(14) || department,
-      course: course || null,
-      is_girl_member: true,
-    });
-  }
+  for (let m = 0; m < 5; m++) {
+    let startIdx = mIndices[m];
+    if (startIdx === -1 && headers.length <= 34) {
+      startIdx = legacyMemberStarts[m];
+    }
+    if (startIdx === -1 || startIdx >= rawCells.length) continue;
 
-  // Member 2
-  const m2Name = getVal(15);
-  if (m2Name) {
-    members.push({
-      member_number: 2,
-      name: m2Name,
-      gender: getVal(16) || 'Male',
-      email: getVal(17),
-      enrollment_number: getVal(18),
-      department: getVal(19) || department,
-      course: course || null,
-      is_girl_member: false,
-    });
-  }
+    const mName = get(startIdx);
+    if (!mName) continue;
 
-  // Member 3
-  const m3Name = getVal(20);
-  if (m3Name) {
-    members.push({
-      member_number: 3,
-      name: m3Name,
-      gender: getVal(21) || 'Male',
-      email: getVal(22),
-      enrollment_number: getVal(23),
-      department: getVal(24) || department,
-      course: course || null,
-      is_girl_member: false,
-    });
-  }
+    let mEmail = '', mEnroll = '', mGender = m === 0 ? 'Female' : 'Male', mDept = department;
 
-  // Member 4
-  const m4Name = getVal(25);
-  if (m4Name) {
-    members.push({
-      member_number: 4,
-      name: m4Name,
-      email: getVal(26),
-      gender: getVal(27) || 'Male',
-      enrollment_number: getVal(28),
-      department: getVal(29) || department,
-      course: course || null,
-      is_girl_member: false,
-    });
-  }
+    if (mIndices[m] !== -1) {
+      const nextIdx = (m < 4 && mIndices[m + 1] !== -1) ? mIndices[m + 1] : Math.min(startIdx + 6, headers.length);
+      for (let c = startIdx + 1; c < nextIdx; c++) {
+        const h = String(headers[c] || '').toLowerCase();
+        const val = get(c);
+        if (!val) continue;
+        if (h.includes('email')) mEmail = val;
+        else if (h.includes('enroll')) mEnroll = val;
+        else if (h.includes('gender')) mGender = val;
+        else if (h.includes('department') || h.includes('dept')) mDept = val;
+      }
+    } else {
+      mEmail = get(startIdx + 1);
+      mEnroll = get(startIdx + 2);
+      mGender = get(startIdx + 3) || (m === 0 ? 'Female' : 'Male');
+      mDept = get(startIdx + 4) || department;
+    }
 
-  // Member 5
-  const m5Name = getVal(30);
-  if (m5Name) {
+    const isGirl = m === 0 || /female/i.test(mGender) || /girl/i.test(String(headers[startIdx] || ''));
+
     members.push({
-      member_number: 5,
-      name: m5Name,
-      email: getVal(31),
-      enrollment_number: getVal(32),
-      department: getVal(33) || department,
+      member_number: m + 1,
+      name: mName,
+      email: mEmail || null,
+      enrollment_number: mEnroll || null,
+      gender: mGender,
+      department: mDept || department || null,
       course: course || null,
-      gender: 'Male',
-      is_girl_member: false,
+      academic_year: parsedYear || null,
+      member_year: parsedYear || null,
+      contact: null,
+      is_girl_member: isGirl,
     });
   }
 
@@ -177,6 +181,7 @@ function parseRamaRow(rawCells, headers, index, usedCodes) {
     leader_email: leaderEmail,
     leader_enrollment: leaderEnroll,
     submitter_email: submitterEmail,
+    academic_year: parsedYear,
     contact_info: contactInfo,
     team_members: members,
     raw_data: rawCells,
@@ -248,21 +253,48 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
         });
 
         if (rawRows.length > 0) {
-          detectedHeaders = rawRows[0];
+          // 1. Scan top rows (up to 10) to find the true header row
+          let headerRowIndex = 0;
+          for (let r = 0; r < Math.min(rawRows.length, 10); r++) {
+            const row = rawRows[r];
+            if (!Array.isArray(row) || row.length === 0) continue;
+            const nonEmpty = row.filter(c => c && String(c).trim().length > 0).length;
+            if (nonEmpty < 2) continue; // skip row if it's empty or almost empty
+
+            const rowText = row.map(c => String(c || '').toLowerCase().trim()).join(' ');
+            const headerKeywords = ['email', 'team', 'member', 'department', 'course', 'problem', 'code', 'leader'];
+            const matchCount = headerKeywords.filter(kw => rowText.includes(kw)).length;
+
+            if (matchCount >= 2) {
+              headerRowIndex = r;
+              break;
+            }
+          }
+
+          detectedHeaders = rawRows[headerRowIndex].map(h => String(h || '').trim());
           isRama = isRamaFormat(detectedHeaders);
 
+          // 2. Filter out ghost / empty rows from data
+          const dataRows = rawRows.slice(headerRowIndex + 1);
+          const validDataRows = dataRows.filter(row => {
+            if (!Array.isArray(row) || row.length === 0) return false;
+            // Check if row has at least 2 non-empty cells
+            const nonEmptyCells = row.filter(c => c !== null && c !== undefined && String(c).trim().length > 0);
+            return nonEmptyCells.length >= 2;
+          });
+
           if (isRama) {
-            records = rawRows.slice(1).map((row, idx) => parseRamaRow(row, detectedHeaders, idx, usedCodes));
+            records = validDataRows.map((row, idx) => parseRamaRow(row, detectedHeaders, idx, usedCodes));
           } else {
-            // Standard CSV mapping
-            const parsed = parse(text, {
-              delimiter,
-              columns: true,
-              skip_empty_lines: true,
-              trim: true,
-              relax_column_count: true,
+            // Standard CSV mapping: map valid rows using detectedHeaders
+            records = validDataRows.map(row => {
+              const obj = {};
+              detectedHeaders.forEach((header, colIdx) => {
+                const key = header || `column_${colIdx + 1}`;
+                obj[key] = sanitize(String(row[colIdx] || '').trim());
+              });
+              return obj;
             });
-            records = parsed;
           }
         }
       } catch (e) {
@@ -539,7 +571,8 @@ router.post('/confirm', authenticate, requireAdmin, async (req, res) => {
               const mContact = m.contact || m.phone || null;
               const mCourse = m.course || teamPayload.course || null;
               const mDept = m.department || teamPayload.department || null;
-              const mYear = m.member_year || m.year || null;
+              const rawYr = m.member_year || m.academic_year || m.year || teamPayload.academic_year || null;
+              const mYear = rawYr ? parseInt(String(rawYr).replace(/[^0-9]/g, ''), 10) || null : null;
 
               // Insert into team_members
               await query(
@@ -574,36 +607,44 @@ router.post('/confirm', authenticate, requireAdmin, async (req, res) => {
               await supabaseAdmin.from('team_members').delete().eq('team_id', currentTeamId);
               await supabaseAdmin.from('master_team_member_details').delete().eq('team_id', currentTeamId);
 
-              const memberInserts = teamPayload.team_members.map(m => ({
-                team_id: currentTeamId,
-                team_code: teamPayload.team_code,
-                member_number: m.member_number,
-                name: m.name,
-                email: m.email || null,
-                enrollment_number: m.enrollment_number || null,
-                gender: m.gender || null,
-                department: m.department || teamPayload.department || null,
-                course: m.course || teamPayload.course || null,
-                contact: m.contact || m.phone || null,
-                academic_year: m.member_year || m.year || null,
-                is_girl_member: !!m.is_girl_member,
-              }));
+              const memberInserts = teamPayload.team_members.map(m => {
+                const rawYr = m.member_year || m.academic_year || m.year || teamPayload.academic_year || null;
+                const mYear = rawYr ? parseInt(String(rawYr).replace(/[^0-9]/g, ''), 10) || null : null;
+                return {
+                  team_id: currentTeamId,
+                  team_code: teamPayload.team_code,
+                  member_number: m.member_number,
+                  name: m.name,
+                  email: m.email || null,
+                  enrollment_number: m.enrollment_number || null,
+                  gender: m.gender || null,
+                  department: m.department || teamPayload.department || null,
+                  course: m.course || teamPayload.course || null,
+                  contact: m.contact || m.phone || null,
+                  academic_year: mYear,
+                  is_girl_member: !!m.is_girl_member,
+                };
+              });
               await supabaseAdmin.from('team_members').insert(memberInserts);
 
-              const masterInserts = teamPayload.team_members.map(m => ({
-                team_id: currentTeamId,
-                team_code: teamPayload.team_code,
-                member_number: m.member_number,
-                member_name: m.name,
-                member_email: m.email || null,
-                member_enrolment: m.enrollment_number || null,
-                member_contact: m.contact || m.phone || null,
-                member_department: m.department || teamPayload.department || null,
-                member_course: m.course || teamPayload.course || null,
-                member_year: m.member_year || m.year || null,
-                gender: m.gender || null,
-                is_girl_member: !!m.is_girl_member,
-              }));
+              const masterInserts = teamPayload.team_members.map(m => {
+                const rawYr = m.member_year || m.academic_year || m.year || teamPayload.academic_year || null;
+                const mYear = rawYr ? parseInt(String(rawYr).replace(/[^0-9]/g, ''), 10) || null : null;
+                return {
+                  team_id: currentTeamId,
+                  team_code: teamPayload.team_code,
+                  member_number: m.member_number,
+                  member_name: m.name,
+                  member_email: m.email || null,
+                  member_enrolment: m.enrollment_number || null,
+                  member_contact: m.contact || m.phone || null,
+                  member_department: m.department || teamPayload.department || null,
+                  member_course: m.course || teamPayload.course || null,
+                  member_year: mYear,
+                  gender: m.gender || null,
+                  is_girl_member: !!m.is_girl_member,
+                };
+              });
               await supabaseAdmin.from('master_team_member_details').insert(masterInserts);
             } catch (supaErr) {
               console.warn('Supabase member relational insert fallback error:', supaErr.message);
@@ -722,7 +763,7 @@ router.get('/history', authenticate, requireAdmin, async (req, res) => {
  * GET /api/import/templates/:format
  * Download sample import template
  */
-router.get('/templates/:format', authenticate, requireAdmin, (req, res) => {
+router.get('/templates/:format', (req, res) => {
   const format = req.params.format.toLowerCase();
 
   if (format === 'csv' || format === 'tsv') {
@@ -731,7 +772,7 @@ router.get('/templates/:format', authenticate, requireAdmin, (req, res) => {
     const headers = [
       'Email Address', 'Department', 'Course', 'Team Name', 'Leader Contact Number',
       'Problem Code (SIH)( Like: SIHXXXXX)', 'Problem Statement   (SIH)',
-      'Team Leader Name   ( Like:  Name -F.E.T)', 'Rama official Email id Leader', 'Enrollment Number (Team Leader)',
+      'Team Leader Name   ( Like:  Name -F.E.T)', 'Rama official Email id Leader', 'Enrollment Number (Team Leader)', 'YEAR',
       'Member 1 - Girl     ( Like:  Name -F.E.T)', 'Email id  (Rama official) Member 1', 'Enrollment Number (Member 1)', 'Gender', 'Department',
       'Member 2     ( Like:  Name -F.E.T)', 'Gender', 'Email id (Rama official) Member 2', 'Enrollment Number (Member 2)', 'Department',
       'Member 3     ( Like:  Name -FET)', 'Gender', 'Email id (Rama offical ) Member 3', 'Enrollment Number (Member 3)', 'Department',
@@ -742,7 +783,7 @@ router.get('/templates/:format', authenticate, requireAdmin, (req, res) => {
     const row1 = [
       'leader@ramauniversity.ac.in', 'Computer Science & Engineering', 'B.Tech CSE', 'Code Mavericks', '9876543210',
       'SIH1523', 'AI Powered Real-time Traffic Management System',
-      'Rahul Sharma - F.E.T', 'rahul.sharma@ramauniversity.ac.in', 'RU2022CSE045',
+      'Rahul Sharma - F.E.T', 'rahul.sharma@ramauniversity.ac.in', 'RU2022CSE045', '3rd',
       'Priya Patel - F.E.T', 'priya.patel@ramauniversity.ac.in', 'RU2022CSE088', 'Female', 'Computer Science & Engineering',
       'Aman Verma - F.E.T', 'Male', 'aman.verma@ramauniversity.ac.in', 'RU2022CSE012', 'Computer Science & Engineering',
       'Rohan Gupta - FET', 'Male', 'rohan.gupta@ramauniversity.ac.in', 'RU2022CSE067', 'Computer Science & Engineering',

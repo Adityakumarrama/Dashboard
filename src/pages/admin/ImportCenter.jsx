@@ -147,7 +147,15 @@ export default function ImportCenter() {
           )}
           <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-4)' }}>
             <button className="btn btn-secondary" onClick={() => { setStep(0); setFile(null); setImportData(null); }}>← Back</button>
-            <button className="btn btn-primary" onClick={() => setStep(2)} disabled={importData.summary?.totalRecords === 0}>Continue to Field Mapping →</button>
+            {importData.isRamaFormat ? (
+              <button className="btn btn-primary" onClick={() => setStep(3)} disabled={importData.summary?.totalRecords === 0}>
+                Continue to Validation & Preview →
+              </button>
+            ) : (
+              <button className="btn btn-primary" onClick={() => setStep(2)} disabled={importData.summary?.totalRecords === 0}>
+                Continue to Field Mapping →
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -157,18 +165,23 @@ export default function ImportCenter() {
         <div className="card">
           <h3>Field Mapping</h3>
           <p style={{ color: 'var(--color-text-muted)', marginBottom: 'var(--space-4)' }}>Map detected fields to database fields</p>
-          {importData.detectedHeaders?.map(header => (
-            <div className="mapping-row" key={header}>
-              <div className="mapping-source">{header}</div>
-              <div className="mapping-arrow">→</div>
-              <div className="mapping-target">
-                <select className="select" value={mapping[header] || ''} onChange={e => setMapping({...mapping, [header]: e.target.value || null})}>
-                  <option value="">— Skip —</option>
-                  {importData.dbFields?.map(f => <option key={f} value={f}>{f}</option>)}
-                </select>
+          {importData.detectedHeaders?.map((header, idx) => {
+            const fieldKey = header || `col_${idx}`;
+            return (
+              <div className="mapping-row" key={`${fieldKey}-${idx}`}>
+                <div className="mapping-source">
+                  {header ? header : <span style={{ color: 'var(--color-warning-dark)', fontStyle: 'italic' }}>Column {idx + 1} (No Header)</span>}
+                </div>
+                <div className="mapping-arrow">→</div>
+                <div className="mapping-target">
+                  <select className="select" value={mapping[fieldKey] || ''} onChange={e => setMapping({...mapping, [fieldKey]: e.target.value || null})}>
+                    <option value="">— Skip —</option>
+                    {importData.dbFields?.map(f => <option key={f} value={f}>{f}</option>)}
+                  </select>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-4)' }}>
             <button className="btn btn-secondary" onClick={() => setStep(1)}>← Back</button>
             <button className="btn btn-primary" onClick={() => setStep(3)}>Continue to Validation →</button>
@@ -209,7 +222,7 @@ export default function ImportCenter() {
             </div>
           )}
           <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-4)' }}>
-            <button className="btn btn-secondary" onClick={() => setStep(2)}>← Back</button>
+            <button className="btn btn-secondary" onClick={() => setStep(importData.isRamaFormat ? 1 : 2)}>← Back</button>
             <button className="btn btn-primary" onClick={() => setStep(4)}>Preview Records →</button>
           </div>
         </div>
