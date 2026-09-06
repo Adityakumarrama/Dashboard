@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import api from '../../lib/api';
 import { useToast } from '../../context/ToastContext';
 import { formatFileSize } from '../../lib/utils';
@@ -13,8 +13,17 @@ export default function ImportCenter() {
   const [importData, setImportData] = useState(null);
   const [mapping, setMapping] = useState({});
   const [dupStrategy, setDupStrategy] = useState('skip');
+  const [assignmentStrategy, setAssignmentStrategy] = useState('auto_round_robin');
+  const [selectedJuries, setSelectedJuries] = useState([]);
+  const [activeJuries, setActiveJuries] = useState([]);
   const [result, setResult] = useState(null);
   const toast = useToast();
+
+  useEffect(() => {
+    api.get('/users', { role: 'JURY', limit: 100 })
+      .then(data => setActiveJuries((data.users || []).filter(u => u.status === 'active')))
+      .catch(() => {});
+  }, []);
 
   const handleFile = (f) => {
     const ext = f.name.split('.').pop().toLowerCase();
@@ -38,10 +47,16 @@ export default function ImportCenter() {
   };
 
   const handleConfirm = async () => {
+    if (assignmentStrategy === 'specific' && selectedJuries.length === 0) {
+      toast.warning('Please select at least one jury member or choose another assignment option');
+      return;
+    }
     try {
       const data = await api.post('/import/confirm', {
         records: importData.validRecords,
         duplicateStrategy: dupStrategy,
+        assignmentStrategy,
+        selectedJuryIds: selectedJuries,
         fileName: file?.name,
         fileType: importData.file?.type,
       });
@@ -49,6 +64,10 @@ export default function ImportCenter() {
       setStep(6);
       toast.success('Import completed!');
     } catch (err) { toast.error(err.message); }
+  };
+
+  const toggleJury = (id) => {
+    setSelectedJuries(prev => prev.includes(id) ? prev.filter(j => j !== id) : [...prev, id]);
   };
 
   const handleDownloadTemplate = (format) => { window.open(`/api/import/templates/${format}`, '_blank'); };
@@ -280,6 +299,7 @@ export default function ImportCenter() {
         <div className="card">
           <h3>Confirm Import</h3>
           <p style={{ marginBottom: 'var(--space-4)' }}>Ready to import <strong>{importData.validRecords?.length}</strong> teams.</p>
+          
           <div className="form-group">
             <label className="form-label">Duplicate Handling Strategy</label>
             <select className="select" value={dupStrategy} onChange={e => setDupStrategy(e.target.value)}>
@@ -288,7 +308,120 @@ export default function ImportCenter() {
               <option value="replace">Replace existing teams</option>
             </select>
           </div>
-          <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-4)' }}>
+
+          <div className="form-group" style={{ marginTop: 'var(--space-5)' }}>
+            <label className="form-label" style={{ fontSize: 'var(--text-md)', fontWeight: 600 }}>
+              Jury Team Assignment Option
+            </label>
+            <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', marginTop: 2, marginBottom: 'var(--space-3)' }}>
+              Choose how to allocate these {importData.validRecords?.length} teams among active jury members ({activeJuries.length} active judges available).
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
+              <div
+                onClick={() => setAssignmentStrategy('auto_round_robin')}
+                style={{
+                  padding: 'var(--space-3)',
+                  border: `2px solid ${assignmentStrategy === 'auto_round_robin' ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                  background: assignmentStrategy === 'auto_round_robin' ? 'rgba(79, 70, 229, 0.08)' : 'var(--color-bg-surface)',
+                  borderRadius: 'var(--radius-md)',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontWeight: 600 }}>
+                  <input type="radio" name="assignment" checked={assignmentStrategy === 'auto_round_robin'} onChange={() => setAssignmentStrategy('auto_round_robin')} />
+                  <span>⚡ Auto-Assign (Round-Robin)</span>
+                </div>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)', marginTop: 'var(--space-1)', paddingLeft: '22px' }}>
+                  Distributes teams equally among {activeJuries.length} active judges (~{activeJuries.length > 0 ? Math.ceil((importData.validRecords?.length || 0) / activeJuries.length) : 0} teams/judge).
+                </div>
+              </div>
+
+              <div
+                onClick={() => setAssignmentStrategy('auto_all')}
+                style={{
+                  padding: 'var(--space-3)',
+                  border: `2px solid ${assignmentStrategy === 'auto_all' ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                  background: assignmentStrategy === 'auto_all' ? 'rgba(79, 70, 229, 0.08)' : 'var(--color-bg-surface)',
+                  borderRadius: 'var(--radius-md)',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontWeight: 600 }}>
+                  <input type="radio" name="assignment" checked={assignmentStrategy === 'auto_all'} onChange={() => setAssignmentStrategy('auto_all')} />
+                  <span>👥 Auto-Assign (Full Panel)</span>
+                </div>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)', marginTop: 'var(--space-1)', paddingLeft: '22px' }}>
+                  Every active judge will be assigned all {importData.validRecords?.length} imported teams.
+                </div>
+              </div>
+
+              <div
+                onClick={() => setAssignmentStrategy('specific')}
+                style={{
+                  padding: 'var(--space-3)',
+                  border: `2px solid ${assignmentStrategy === 'specific' ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                  background: assignmentStrategy === 'specific' ? 'rgba(79, 70, 229, 0.08)' : 'var(--color-bg-surface)',
+                  borderRadius: 'var(--radius-md)',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontWeight: 600 }}>
+                  <input type="radio" name="assignment" checked={assignmentStrategy === 'specific'} onChange={() => setAssignmentStrategy('specific')} />
+                  <span>👤 Assign to Specific Judge(s)</span>
+                </div>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)', marginTop: 'var(--space-1)', paddingLeft: '22px' }}>
+                  Choose exactly which judges will evaluate these imported teams.
+                </div>
+              </div>
+
+              <div
+                onClick={() => setAssignmentStrategy('none')}
+                style={{
+                  padding: 'var(--space-3)',
+                  border: `2px solid ${assignmentStrategy === 'none' ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                  background: assignmentStrategy === 'none' ? 'rgba(79, 70, 229, 0.08)' : 'var(--color-bg-surface)',
+                  borderRadius: 'var(--radius-md)',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontWeight: 600 }}>
+                  <input type="radio" name="assignment" checked={assignmentStrategy === 'none'} onChange={() => setAssignmentStrategy('none')} />
+                  <span>⏸️ Manual Assignment Later</span>
+                </div>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)', marginTop: 'var(--space-1)', paddingLeft: '22px' }}>
+                  Import teams without assigning. You can assign them manually from the Teams page.
+                </div>
+              </div>
+            </div>
+
+            {assignmentStrategy === 'specific' && (
+              <div style={{ marginTop: 'var(--space-3)', padding: 'var(--space-3)', background: 'var(--color-bg-surface-alt)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)' }}>
+                <div style={{ fontWeight: 600, fontSize: 'var(--text-sm)', marginBottom: 'var(--space-2)' }}>
+                  Select Judges ({selectedJuries.length} selected):
+                </div>
+                {activeJuries.length === 0 ? (
+                  <div style={{ color: 'var(--color-text-muted)', fontSize: 'var(--text-sm)' }}>No active jury members found.</div>
+                ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 'var(--space-2)' }}>
+                    {activeJuries.map(j => (
+                      <label key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontSize: 'var(--text-sm)', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={selectedJuries.includes(j.id)} onChange={() => toggleJury(j.id)} />
+                        <span>{j.full_name}</span>
+                        {j.judge_id && <span className="tag" style={{ fontSize: '10px' }}>{j.judge_id}</span>}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-5)' }}>
             <button className="btn btn-secondary" onClick={() => setStep(4)}>← Back</button>
             <button className="btn btn-success btn-lg" onClick={handleConfirm}>✓ Confirm Import</button>
           </div>
@@ -300,7 +433,7 @@ export default function ImportCenter() {
         <div className="card" style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 48, marginBottom: 'var(--space-4)' }}>✅</div>
           <h2>Import Completed</h2>
-          <div className="import-summary-grid" style={{ marginTop: 'var(--space-6)' }}>
+          <div className="import-summary-grid" style={{ marginTop: 'var(--space-6)', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))' }}>
             <div className="import-summary-item" style={{ background: 'var(--color-success-light)' }}>
               <div className="import-summary-count" style={{ color: 'var(--color-success-dark)' }}>{result.created}</div>
               <div className="import-summary-label">Created</div>
@@ -308,6 +441,10 @@ export default function ImportCenter() {
             <div className="import-summary-item" style={{ background: 'var(--color-info-light)' }}>
               <div className="import-summary-count" style={{ color: 'var(--color-info-dark)' }}>{result.updated}</div>
               <div className="import-summary-label">Updated</div>
+            </div>
+            <div className="import-summary-item" style={{ background: 'rgba(79, 70, 229, 0.12)' }}>
+              <div className="import-summary-count" style={{ color: 'var(--color-primary)' }}>{result.assigned || 0}</div>
+              <div className="import-summary-label">Assigned</div>
             </div>
             <div className="import-summary-item" style={{ background: 'var(--color-warning-light)' }}>
               <div className="import-summary-count" style={{ color: 'var(--color-warning-dark)' }}>{result.skipped}</div>

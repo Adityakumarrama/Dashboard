@@ -11,6 +11,11 @@ export default function TeamDetail() {
   const [team, setTeam] = useState(null);
   const [evaluations, setEvaluations] = useState([]);
   const [stats, setStats] = useState(null);
+  const [assignedJuries, setAssignedJuries] = useState([]);
+  const [allJuries, setAllJuries] = useState([]);
+  const [selectedJuryToAdd, setSelectedJuryToAdd] = useState('');
+  const [assigning, setAssigning] = useState(false);
+  const [unassigningId, setUnassigningId] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -18,9 +23,58 @@ export default function TeamDetail() {
       setTeam(data.team);
       setEvaluations(data.evaluations || []);
       setStats(data.stats || null);
+      setAssignedJuries(data.assigned_juries || []);
       setLoading(false);
     }).catch(() => setLoading(false));
+
+    api.get('/users?role=JURY').then(data => {
+      setAllJuries(data.users || data || []);
+    }).catch(() => {});
   }, [teamId]);
+
+  const handleAddAssignment = async (e) => {
+    e.preventDefault();
+    if (!selectedJuryToAdd || !team) return;
+    setAssigning(true);
+    try {
+      const res = await api.post('/assignments', {
+        user_id: selectedJuryToAdd,
+        team_id: team.id,
+      });
+      const juryObj = allJuries.find(j => j.id === selectedJuryToAdd);
+      setAssignedJuries(prev => [
+        ...prev,
+        {
+          assignment_id: res.assignment?.id || Date.now(),
+          assigned_at: new Date().toISOString(),
+          user_id: selectedJuryToAdd,
+          full_name: juryObj?.full_name || 'Judge',
+          judge_id: juryObj?.judge_id,
+          email: juryObj?.email,
+        }
+      ]);
+      setSelectedJuryToAdd('');
+      toast.success(`Assigned ${juryObj?.full_name || 'Judge'} to ${team.team_code}`);
+    } catch (err) {
+      toast.error(err.message || 'Failed to assign judge');
+    } finally {
+      setAssigning(false);
+    }
+  };
+
+  const handleRemoveAssignment = async (assignmentId, judgeName) => {
+    if (!confirm(`Remove assignment for ${judgeName || 'this judge'}?`)) return;
+    setUnassigningId(assignmentId);
+    try {
+      await api.delete(`/assignments/${assignmentId}`);
+      setAssignedJuries(prev => prev.filter(a => a.assignment_id !== assignmentId));
+      toast.success(`Removed ${judgeName || 'Judge'} assignment`);
+    } catch (err) {
+      toast.error(err.message || 'Failed to remove assignment');
+    } finally {
+      setUnassigningId(null);
+    }
+  };
 
   const handleDelete = async () => {
     if (!confirm(`Permanently delete team ${team.team_code} (${team.team_name})?\n\nThis action cannot be undone and will delete all associated evaluations.`)) return;
@@ -37,6 +91,9 @@ export default function TeamDetail() {
   if (!team) return <div className="empty-state"><div className="empty-state-title">Team not found</div></div>;
 
   const members = Array.isArray(team.team_members) ? team.team_members : [];
+  const unassignedJuries = allJuries.filter(
+    j => !assignedJuries.some(a => a.user_id === j.id)
+  );
 
   return (
     <div>
@@ -180,6 +237,102 @@ export default function TeamDetail() {
                       <span className="roster-card-meta-label">Rama Email:</span>
                       <div style={{ wordBreak: 'break-all', fontSize: 'var(--text-xs)', marginTop: 2 }}>{m.email || m.member_email || '—'}</div>
                     </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+ 
+      {/* Assigned Jury Panel */}
+      <div className="card" style={{ marginTop: 'var(--space-6)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 'var(--space-3)', marginBottom: 'var(--space-4)' }}>
+          <div>
+            <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+              <span>⚖️</span> Assigned Jury Panel ({assignedJuries.length})
+            </h3>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', marginTop: 2 }}>
+              Active judges who can evaluate this team during rounds
+            </div>
+          </div>
+          {/* Quick Assign Dropdown */}
+          <form onSubmit={handleAddAssignment} style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', flexWrap: 'wrap' }}>
+            <select
+              className="form-control form-control-sm"
+              style={{ minWidth: 220 }}
+              value={selectedJuryToAdd}
+              onChange={e => setSelectedJuryToAdd(e.target.value)}
+              disabled={assigning || unassignedJuries.length === 0}
+            >
+              <option value="">
+                {unassignedJuries.length === 0 ? 'All judges already assigned' : '+ Assign Judge...'}
+              </option>
+              {unassignedJuries.map(j => (
+                <option key={j.id} value={j.id}>
+                  {j.judge_id ? `[${j.judge_id}] ` : ''}{j.full_name} ({j.email})
+                </option>
+              ))}
+            </select>
+            <button
+              type="submit"
+              className="btn btn-primary btn-sm"
+              disabled={!selectedJuryToAdd || assigning}
+            >
+              {assigning ? 'Assigning...' : '+ Assign'}
+            </button>
+          </form>
+        </div>
+
+        {assignedJuries.length === 0 ? (
+          <div style={{ padding: 'var(--space-4)', textAlign: 'center', color: 'var(--color-text-muted)', background: 'var(--color-bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+            ⚠️ No judges assigned to this team yet. Select a judge above to manually assign, or use bulk auto-assign on the Teams page.
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 'var(--space-3)' }}>
+            {assignedJuries.map(j => {
+              const evalForJudge = evaluations.find(e => e.user_id === j.user_id || e.judge_name === j.full_name);
+              return (
+                <div
+                  key={j.assignment_id || j.user_id}
+                  style={{
+                    padding: 'var(--space-3)',
+                    borderRadius: 'var(--radius-md)',
+                    border: '1px solid var(--color-border-light)',
+                    background: 'var(--color-bg-surface)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'space-between',
+                    gap: 'var(--space-2)',
+                  }}
+                >
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <strong style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-primary)' }}>
+                        {j.full_name || 'Judge'}
+                      </strong>
+                      {j.judge_id && (
+                        <span className="tag" style={{ fontSize: '10px', padding: '1px 5px' }}>{j.judge_id}</span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', marginTop: 2, wordBreak: 'break-all' }}>
+                      {j.email || '—'}
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 'var(--space-2)', borderTop: '1px solid var(--color-border-light)' }}>
+                    <span className={`badge ${evalForJudge?.status === 'submitted' ? 'badge-success' : 'badge-warning'}`} style={{ fontSize: '10px' }}>
+                      {evalForJudge?.status === 'submitted' ? '✓ Evaluated' : '⏳ Pending'}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      style={{ color: 'var(--color-error)', padding: '2px 6px', fontSize: 'var(--text-xs)' }}
+                      disabled={unassigningId === j.assignment_id}
+                      onClick={() => handleRemoveAssignment(j.assignment_id, j.full_name)}
+                    >
+                      {unassigningId === j.assignment_id ? '...' : '✕ Remove'}
+                    </button>
                   </div>
                 </div>
               );

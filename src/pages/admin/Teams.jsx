@@ -11,6 +11,13 @@ export default function AdminTeams() {
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [showCreate, setShowCreate] = useState(false);
+  const [activeJuries, setActiveJuries] = useState([]);
+  const [selectedTeams, setSelectedTeams] = useState([]);
+  const [assignModalTeam, setAssignModalTeam] = useState(null);
+  const [showBulkAssign, setShowBulkAssign] = useState(false);
+  const [bulkJuryId, setBulkJuryId] = useState('');
+  const [autoAssigning, setAutoAssigning] = useState(false);
+
   const initialForm = {
     team_code: '', team_name: '', problem_statement_id: '', problem_statement_title: '',
     organization: 'Rama University (F.E.T)', category: 'Software', track: '', team_leader: '',
@@ -24,13 +31,19 @@ export default function AdminTeams() {
     setLoading(true);
     try {
       const data = await api.get('/teams', { page, limit: 25, search });
-      setTeams(data.teams);
+      setTeams(data.teams || []);
       setPagination(data.pagination);
     } catch { toast.error('Failed to load teams'); }
     setLoading(false);
   };
 
   useEffect(() => { fetchTeams(); }, [page, search]);
+
+  useEffect(() => {
+    api.get('/users', { role: 'JURY', limit: 100 })
+      .then(d => setActiveJuries((d.users || []).filter(u => u.status === 'active')))
+      .catch(() => {});
+  }, []);
 
   const handleCreate = async (e) => {
     e.preventDefault();
@@ -52,6 +65,56 @@ export default function AdminTeams() {
     } catch (err) { toast.error(err.message); }
   };
 
+  const allSelected = teams.length > 0 && selectedTeams.length === teams.length;
+  const toggleSelectAll = () => {
+    if (allSelected) setSelectedTeams([]);
+    else setSelectedTeams(teams.map(t => t.id));
+  };
+  const toggleSelectTeam = (id) => {
+    setSelectedTeams(prev => prev.includes(id) ? prev.filter(t => t !== id) : [...prev, id]);
+  };
+
+  const handleAutoAssignSelected = async () => {
+    if (selectedTeams.length === 0) return;
+    setAutoAssigning(true);
+    try {
+      const data = await api.post('/assignments/auto-assign', { mode: 'round_robin', team_ids: selectedTeams });
+      toast.success(data.message || `Auto-assigned ${selectedTeams.length} teams across active judges`);
+      setSelectedTeams([]);
+      fetchTeams();
+    } catch (err) {
+      toast.error(err.message || 'Auto-assignment failed');
+    } finally {
+      setAutoAssigning(false);
+    }
+  };
+
+  const handleBulkAssignToJudge = async () => {
+    if (!bulkJuryId) { toast.warning('Select a judge'); return; }
+    try {
+      const data = await api.post('/assignments/bulk', { user_id: bulkJuryId, team_ids: selectedTeams });
+      toast.success(`Assigned ${data.created} teams`);
+      setShowBulkAssign(false);
+      setSelectedTeams([]);
+      fetchTeams();
+    } catch (err) { toast.error(err.message); }
+  };
+
+  const handleToggleJudgeAssignment = async (juryId, isAssigned, assignmentId) => {
+    try {
+      if (isAssigned && assignmentId) {
+        await api.delete(`/assignments/${assignmentId}`);
+        toast.success('Judge unassigned');
+      } else {
+        await api.post('/assignments', { user_id: juryId, team_id: assignModalTeam.id });
+        toast.success('Judge assigned');
+      }
+      const updated = await api.get(`/teams/${assignModalTeam.id}`);
+      setAssignModalTeam(updated.team ? { ...updated.team, assigned_juries: updated.assigned_juries } : null);
+      fetchTeams();
+    } catch (err) { toast.error(err.message); }
+  };
+
   return (
     <div>
       <div className="page-header">
@@ -60,10 +123,54 @@ export default function AdminTeams() {
           <p className="page-subtitle">{pagination?.total || 0} teams registered</p>
         </div>
         <div className="page-actions">
+          <Link to="/admin/assignments" className="btn btn-secondary">⚡ Assignments Panel</Link>
           <Link to="/admin/import" className="btn btn-secondary">📥 Import</Link>
           <button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ Create Team</button>
         </div>
       </div>
+
+      {/* Bulk action bar when items are selected */}
+      {selectedTeams.length > 0 && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 'var(--space-3)',
+          padding: 'var(--space-3) var(--space-4)',
+          background: 'rgba(79, 70, 229, 0.08)',
+          border: '1.5px solid var(--color-primary-light, #818cf8)',
+          borderRadius: 'var(--radius-md)',
+          marginBottom: 'var(--space-4)'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontWeight: 600 }}>
+            <span>🎯</span>
+            <span>{selectedTeams.length} teams selected</span>
+          </div>
+          <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={handleAutoAssignSelected}
+              disabled={autoAssigning || activeJuries.length === 0}
+            >
+              {autoAssigning ? 'Assigning...' : `⚡ Auto-Assign (${activeJuries.length} Judges)`}
+            </button>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => setShowBulkAssign(true)}
+              disabled={activeJuries.length === 0}
+            >
+              👤 Assign to Specific Judge...
+            </button>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setSelectedTeams([])}
+            >
+              Clear Selection
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Search */}
       <div className="toolbar">
@@ -78,10 +185,13 @@ export default function AdminTeams() {
         <table className="table">
           <thead>
             <tr>
+              <th style={{ width: 40, textAlign: 'center' }}>
+                <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} title="Select All on Page" />
+              </th>
               <th>Team Code</th>
               <th>Team Name</th>
               <th>Department / Course</th>
-              <th>Problem Statement</th>
+              <th>Assigned Jury</th>
               <th>Team Leader</th>
               <th>Status</th>
               <th>Actions</th>
@@ -90,44 +200,66 @@ export default function AdminTeams() {
           <tbody>
             {loading ? (
               [...Array(5)].map((_, i) => (
-                <tr key={i}><td colSpan="7"><div className="skeleton skeleton-text" /></td></tr>
+                <tr key={i}><td colSpan="8"><div className="skeleton skeleton-text" /></td></tr>
               ))
             ) : teams.length === 0 ? (
-              <tr><td colSpan="7" className="empty-state">
+              <tr><td colSpan="8" className="empty-state">
                 <div className="empty-state-icon">👥</div>
                 <div className="empty-state-title">No teams found</div>
                 <div className="empty-state-text">Create teams or import them from CSV/TSV</div>
               </td></tr>
             ) : (
-              teams.map(team => (
-                <tr key={team.id}>
-                  <td>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--color-accent)' }}>
-                      {team.team_code}
-                    </span>
-                  </td>
-                  <td><strong>{truncate(team.team_name, 28)}</strong></td>
-                  <td style={{ fontSize: 'var(--text-sm)' }}>
-                    <div>{team.department || team.track || '—'}</div>
-                    {team.course && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>{team.course}</div>}
-                  </td>
-                  <td style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-secondary)' }}>
-                    {team.problem_statement_id && <span className="tag" style={{ marginRight: 4 }}>{team.problem_statement_id}</span>}
-                    {truncate(team.problem_statement_title, 25)}
-                  </td>
-                  <td style={{ fontSize: 'var(--text-sm)' }}>
-                    <div><strong>{truncate(team.team_leader || '—', 20)}</strong></div>
-                    {team.leader_enrollment && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)' }}>{team.leader_enrollment}</div>}
-                  </td>
-                  <td><span className={`badge ${getStatusClass(team.registration_status)}`}>{team.registration_status}</span></td>
-                  <td>
-                    <div style={{ display: 'flex', gap: 'var(--space-1)' }}>
-                      <button className="btn btn-ghost btn-sm" onClick={() => navigate(`/admin/teams/${team.id}`)}>View</button>
-                      <button className="btn btn-ghost btn-sm" style={{ color: 'var(--color-error)' }} onClick={() => handleDelete(team.id, team.team_code)}>Delete</button>
-                    </div>
-                  </td>
-                </tr>
-              ))
+              teams.map(team => {
+                const assigned = team.assigned_juries || [];
+                const isSelected = selectedTeams.includes(team.id);
+                return (
+                  <tr key={team.id} style={{ background: isSelected ? 'rgba(79, 70, 229, 0.04)' : undefined }}>
+                    <td style={{ textAlign: 'center' }}>
+                      <input type="checkbox" checked={isSelected} onChange={() => toggleSelectTeam(team.id)} />
+                    </td>
+                    <td>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--color-accent)' }}>
+                        {team.team_code}
+                      </span>
+                    </td>
+                    <td>
+                      <div><strong>{truncate(team.team_name, 26)}</strong></div>
+                      {team.problem_statement_id && <span className="tag" style={{ fontSize: '10px', marginTop: 2 }}>{team.problem_statement_id}</span>}
+                    </td>
+                    <td style={{ fontSize: 'var(--text-sm)' }}>
+                      <div>{team.department || team.track || '—'}</div>
+                      {team.course && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>{team.course}</div>}
+                    </td>
+                    <td>
+                      {assigned.length === 0 ? (
+                        <span className="badge badge-warning" style={{ fontSize: '11px' }}>Unassigned</span>
+                      ) : (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxWidth: 220 }}>
+                          {assigned.map(j => (
+                            <span key={j.id || j.user_id} className="tag tag-primary" style={{ fontSize: '11px', padding: '2px 6px' }} title={j.full_name}>
+                              👤 {truncate(j.full_name || j.judge_id, 14)}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ fontSize: 'var(--text-sm)' }}>
+                      <div><strong>{truncate(team.team_leader || '—', 18)}</strong></div>
+                      {team.leader_enrollment && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)' }}>{team.leader_enrollment}</div>}
+                    </td>
+                    <td><span className={`badge ${getStatusClass(team.registration_status)}`}>{team.registration_status}</span></td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 'var(--space-1)' }}>
+                        <button className="btn btn-secondary btn-sm" style={{ padding: '2px 8px', fontSize: '12px' }} onClick={() => setAssignModalTeam(team)}>
+                          🎯 Assign
+                        </button>
+                        <button className="btn btn-ghost btn-sm" onClick={() => navigate(`/admin/teams/${team.id}`)}>View</button>
+                        <button className="btn btn-ghost btn-sm" style={{ color: 'var(--color-error)' }} onClick={() => handleDelete(team.id, team.team_code)}>Delete</button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
@@ -214,6 +346,108 @@ export default function AdminTeams() {
                 <button type="submit" className="btn btn-primary">Create Team</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Assign Modal for a Single Team */}
+      {assignModalTeam && (
+        <div className="modal-overlay" onClick={() => setAssignModalTeam(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h3 className="modal-title">🎯 Assign Jury to Team</h3>
+                <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', marginTop: 2 }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--color-accent)' }}>{assignModalTeam.team_code}</span> — {assignModalTeam.team_name}
+                </p>
+              </div>
+              <button className="modal-close" onClick={() => setAssignModalTeam(null)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-secondary)', marginBottom: 'var(--space-3)' }}>
+                Click on a judge to assign or unassign them from this team:
+              </p>
+              {activeJuries.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: 'var(--space-4)', color: 'var(--color-text-muted)' }}>
+                  No active jury members found. Create or activate judges in User Management first.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', maxHeight: 350, overflow: 'auto' }}>
+                  {activeJuries.map(j => {
+                    const existingAssignment = (assignModalTeam.assigned_juries || []).find(a => a.user_id === j.id);
+                    const isAssigned = !!existingAssignment;
+                    return (
+                      <div
+                        key={j.id}
+                        onClick={() => handleToggleJudgeAssignment(j.id, isAssigned, existingAssignment?.id)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: 'var(--space-3)',
+                          border: `1.5px solid ${isAssigned ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                          background: isAssigned ? 'rgba(79, 70, 229, 0.08)' : 'var(--color-bg-surface)',
+                          borderRadius: 'var(--radius-md)',
+                          cursor: 'pointer',
+                          transition: 'all 0.15s ease',
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontWeight: 600, fontSize: 'var(--text-sm)' }}>
+                            {j.full_name}
+                          </div>
+                          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>
+                            {j.judge_id ? `ID: ${j.judge_id}` : j.email}
+                          </div>
+                        </div>
+                        <div>
+                          {isAssigned ? (
+                            <span className="badge badge-success" style={{ fontSize: '11px' }}>✓ Assigned</span>
+                          ) : (
+                            <span className="btn btn-secondary btn-sm" style={{ padding: '2px 8px', fontSize: '11px' }}>+ Assign</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-primary" onClick={() => setAssignModalTeam(null)}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Assign to Specific Judge Modal */}
+      {showBulkAssign && (
+        <div className="modal-overlay" onClick={() => setShowBulkAssign(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="modal-title">👤 Assign Selected Teams to Judge</h3>
+              <button className="modal-close" onClick={() => setShowBulkAssign(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-secondary)', marginBottom: 'var(--space-4)' }}>
+                You have selected <strong>{selectedTeams.length}</strong> teams. Choose which jury member should evaluate these teams:
+              </p>
+              <div className="form-group">
+                <label className="form-label">Select Jury Member</label>
+                <select className="select" value={bulkJuryId} onChange={e => setBulkJuryId(e.target.value)}>
+                  <option value="">Choose a judge...</option>
+                  {activeJuries.map(j => (
+                    <option key={j.id} value={j.id}>{j.full_name} ({j.judge_id || j.email})</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setShowBulkAssign(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleBulkAssignToJudge} disabled={!bulkJuryId}>
+                Assign {selectedTeams.length} Teams
+              </button>
+            </div>
           </div>
         </div>
       )}

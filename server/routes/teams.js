@@ -50,7 +50,15 @@ router.get('/', authenticate, requireAny, async (req, res) => {
       const total = parseInt(countResult?.count || 0);
 
       const teams = await queryAll(
-        `SELECT * FROM teams ${whereClause} ORDER BY created_at DESC LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+        `SELECT t.*,
+          COALESCE(
+            (SELECT json_agg(json_build_object('id', ja.id, 'user_id', u.id, 'full_name', u.full_name, 'judge_id', u.judge_id))
+             FROM jury_assignments ja
+             JOIN users u ON ja.user_id = u.id
+             WHERE ja.team_id = t.id),
+            '[]'::json
+          ) as assigned_juries
+         FROM teams t ${whereClause} ORDER BY t.created_at DESC LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
         [...params, safeLimit, offset]
       );
 
@@ -72,6 +80,32 @@ router.get('/', authenticate, requireAny, async (req, res) => {
         .range(offset, offset + safeLimit - 1);
 
       if (supaErr) throw supaErr;
+
+      if (supaTeams && supaTeams.length > 0) {
+        try {
+          const teamIds = supaTeams.map(t => t.id);
+          const { data: assignments } = await supabaseAdmin
+            .from('jury_assignments')
+            .select('id, team_id, user_id, users(id, full_name, judge_id)')
+            .in('team_id', teamIds);
+
+          const asgMap = new Map();
+          (assignments || []).forEach(a => {
+            if (!asgMap.has(a.team_id)) asgMap.set(a.team_id, []);
+            asgMap.get(a.team_id).push({
+              id: a.id,
+              user_id: a.user_id,
+              full_name: a.users?.full_name,
+              judge_id: a.users?.judge_id,
+            });
+          });
+          supaTeams.forEach(t => {
+            t.assigned_juries = asgMap.get(t.id) || [];
+          });
+        } catch (supaAsgErr) {
+          console.warn('Error fetching jury assignments for teams fallback:', supaAsgErr.message);
+        }
+      }
 
       return res.json({
         teams: supaTeams || [],
@@ -378,7 +412,32 @@ router.get('/:id', authenticate, requireAny, async (req, res) => {
       };
     }
 
-    res.json({ team, evaluations, stats });
+    let assignedJuries = [];
+    try {
+      assignedJuries = await queryAll(
+        `SELECT ja.id as assignment_id, ja.created_at as assigned_at, u.id as user_id, u.full_name, u.judge_id, u.email
+         FROM jury_assignments ja
+         JOIN users u ON ja.user_id = u.id
+         WHERE ja.team_id = $1
+         ORDER BY u.full_name`,
+        [team.id]
+      );
+    } catch {
+      const { data } = await supabaseAdmin
+        .from('jury_assignments')
+        .select('id, created_at, user_id, users(id, full_name, judge_id, email)')
+        .eq('team_id', team.id);
+      assignedJuries = (data || []).map(ja => ({
+        assignment_id: ja.id,
+        assigned_at: ja.created_at,
+        user_id: ja.user_id,
+        full_name: ja.users?.full_name,
+        judge_id: ja.users?.judge_id,
+        email: ja.users?.email,
+      }));
+    }
+
+    res.json({ team, evaluations, stats, assigned_juries: assignedJuries });
   } catch (error) {
     console.error('Get team error:', error);
     res.status(500).json({ error: error.message || 'Failed to get team', code: 'INTERNAL_ERROR' });

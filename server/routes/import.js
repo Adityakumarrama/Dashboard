@@ -431,7 +431,14 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
  */
 router.post('/confirm', authenticate, requireAdmin, async (req, res) => {
   try {
-    const { records, duplicateStrategy, fileName, fileType } = req.body;
+    const { 
+      records, 
+      duplicateStrategy, 
+      fileName, 
+      fileType, 
+      assignmentStrategy = 'auto_round_robin', 
+      selectedJuryIds = [] 
+    } = req.body;
 
     if (!Array.isArray(records) || records.length === 0) {
       return res.status(400).json({ error: 'No records to import', code: 'NO_RECORDS' });
@@ -455,7 +462,7 @@ router.post('/confirm', authenticate, requireAdmin, async (req, res) => {
       importRecord = data;
     }
 
-    let created = 0, updated = 0, skipped = 0, failed = 0;
+    let created = 0, updated = 0, skipped = 0, failed = 0, assigned = 0;
     const insertedTeams = [];
 
     for (const record of records) {
@@ -665,20 +672,52 @@ router.post('/confirm', authenticate, requireAdmin, async (req, res) => {
       }
     }
 
-    // Auto-assign new teams across active jury members
-    if (insertedTeams.length > 0) {
+    // Assign new teams according to admin's chosen assignmentStrategy
+    if (insertedTeams.length > 0 && assignmentStrategy !== 'none') {
       try {
-        let activeJuries = [];
-        try {
-          activeJuries = await queryAll("SELECT id FROM users WHERE role = 'JURY' AND status = 'active'");
-        } catch {
-          const { data } = await supabaseAdmin.from('users').select('id').eq('role', 'JURY').eq('status', 'active');
-          activeJuries = data || [];
+        let targetJuries = [];
+
+        if (assignmentStrategy === 'specific' && Array.isArray(selectedJuryIds) && selectedJuryIds.length > 0) {
+          try {
+            targetJuries = await queryAll("SELECT id FROM users WHERE id = ANY($1) AND role = 'JURY' AND status = 'active'", [selectedJuryIds]);
+          } catch {
+            const { data } = await supabaseAdmin.from('users').select('id').in('id', selectedJuryIds).eq('role', 'JURY').eq('status', 'active');
+            targetJuries = data || [];
+          }
+        } else {
+          try {
+            targetJuries = await queryAll("SELECT id FROM users WHERE role = 'JURY' AND status = 'active' ORDER BY created_at");
+          } catch {
+            const { data } = await supabaseAdmin.from('users').select('id').eq('role', 'JURY').eq('status', 'active').order('created_at');
+            targetJuries = data || [];
+          }
         }
 
-        if (activeJuries.length > 0) {
-          for (const teamId of insertedTeams) {
-            for (const jury of activeJuries) {
+        if (targetJuries.length > 0) {
+          if (assignmentStrategy === 'auto_all' || assignmentStrategy === 'specific') {
+            // Assign every inserted team to all target juries
+            for (const teamId of insertedTeams) {
+              for (const jury of targetJuries) {
+                try {
+                  await query(
+                    'INSERT INTO jury_assignments (user_id, team_id, assigned_by) VALUES ($1, $2, $3) ON CONFLICT (user_id, team_id) DO NOTHING',
+                    [jury.id, teamId, req.user.id]
+                  );
+                } catch {
+                  await supabaseAdmin.from('jury_assignments').upsert({
+                    user_id: jury.id,
+                    team_id: teamId,
+                    assigned_by: req.user.id,
+                  }, { onConflict: 'user_id,team_id' });
+                }
+                assigned++;
+              }
+            }
+          } else if (assignmentStrategy === 'auto_round_robin') {
+            // Distribute inserted teams evenly across target juries in round-robin fashion
+            for (let i = 0; i < insertedTeams.length; i++) {
+              const teamId = insertedTeams[i];
+              const jury = targetJuries[i % targetJuries.length];
               try {
                 await query(
                   'INSERT INTO jury_assignments (user_id, team_id, assigned_by) VALUES ($1, $2, $3) ON CONFLICT (user_id, team_id) DO NOTHING',
@@ -691,11 +730,12 @@ router.post('/confirm', authenticate, requireAdmin, async (req, res) => {
                   assigned_by: req.user.id,
                 }, { onConflict: 'user_id,team_id' });
               }
+              assigned++;
             }
           }
         }
       } catch (assignErr) {
-        console.warn('Auto-assign post-import notice:', assignErr.message);
+        console.warn('Assign post-import notice:', assignErr.message);
       }
     }
 
@@ -720,13 +760,13 @@ router.post('/confirm', authenticate, requireAdmin, async (req, res) => {
 
     try {
       await logAction(req.user.id, 'import.completed', 'import', importRecord?.id,
-        { fileName, fileType, created, updated, skipped, failed }, getClientIp(req));
+        { fileName, fileType, created, updated, skipped, failed, assigned, assignmentStrategy }, getClientIp(req));
     } catch {}
 
     res.json({
       message: 'Import completed successfully',
       importId: importRecord?.id,
-      results: { created, updated, skipped, failed },
+      results: { created, updated, skipped, failed, assigned },
     });
   } catch (error) {
     console.error('Import confirm error:', error);
