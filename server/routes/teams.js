@@ -639,6 +639,92 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
 });
 
 /**
+ * POST /api/teams/bulk-delete
+ * Permanently delete multiple teams or all teams at once
+ */
+router.post('/bulk-delete', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { team_ids, all } = req.body;
+
+    if (!all && (!Array.isArray(team_ids) || team_ids.length === 0)) {
+      return res.status(400).json({ error: 'No teams selected for deletion', code: 'VALIDATION_ERROR' });
+    }
+
+    let deletedCount = 0;
+
+    if (all) {
+      // Delete ALL teams and related records
+      try {
+        const countRes = await queryOne('SELECT COUNT(*) as count FROM teams');
+        deletedCount = parseInt(countRes?.count || 0);
+
+        await query('DELETE FROM master_team_member_details');
+        await query('DELETE FROM team_members');
+        await query('DELETE FROM evaluation_scores');
+        await query('DELETE FROM evaluation_score_history');
+        await query('DELETE FROM evaluations');
+        await query('DELETE FROM jury_assignments');
+        await query('DELETE FROM teams');
+      } catch (pgErr) {
+        console.warn('Postgres bulk delete (all) failed, falling back to Supabase REST client:', pgErr.message);
+        const { data: allTeams } = await supabaseAdmin.from('teams').select('id');
+        deletedCount = allTeams?.length || 0;
+        const allIds = (allTeams || []).map(t => t.id);
+
+        for (let i = 0; i < allIds.length; i += 100) {
+          const chunk = allIds.slice(i, i + 100);
+          try { await supabaseAdmin.from('master_team_member_details').delete().in('team_id', chunk); } catch {}
+          try { await supabaseAdmin.from('team_members').delete().in('team_id', chunk); } catch {}
+          try { await supabaseAdmin.from('evaluation_scores').delete().in('team_id', chunk); } catch {}
+          try { await supabaseAdmin.from('evaluation_score_history').delete().in('team_id', chunk); } catch {}
+          try { await supabaseAdmin.from('evaluations').delete().in('team_id', chunk); } catch {}
+          try { await supabaseAdmin.from('jury_assignments').delete().in('team_id', chunk); } catch {}
+          await supabaseAdmin.from('teams').delete().in('id', chunk);
+        }
+      }
+    } else {
+      // Delete specific team IDs
+      const targetIds = team_ids.filter(Boolean);
+      deletedCount = targetIds.length;
+
+      try {
+        await query('DELETE FROM master_team_member_details WHERE team_id = ANY($1::uuid[])', [targetIds]);
+        await query('DELETE FROM team_members WHERE team_id = ANY($1::uuid[])', [targetIds]);
+        await query('DELETE FROM evaluation_scores WHERE team_id = ANY($1::uuid[])', [targetIds]);
+        await query('DELETE FROM evaluation_score_history WHERE team_id = ANY($1::uuid[])', [targetIds]);
+        await query('DELETE FROM evaluations WHERE team_id = ANY($1::uuid[])', [targetIds]);
+        await query('DELETE FROM jury_assignments WHERE team_id = ANY($1::uuid[])', [targetIds]);
+        await query('DELETE FROM teams WHERE id = ANY($1::uuid[])', [targetIds]);
+      } catch (pgErr) {
+        console.warn('Postgres bulk delete (selected) failed, falling back to Supabase REST client:', pgErr.message);
+        for (let i = 0; i < targetIds.length; i += 100) {
+          const chunk = targetIds.slice(i, i + 100);
+          try { await supabaseAdmin.from('master_team_member_details').delete().in('team_id', chunk); } catch {}
+          try { await supabaseAdmin.from('team_members').delete().in('team_id', chunk); } catch {}
+          try { await supabaseAdmin.from('evaluation_scores').delete().in('team_id', chunk); } catch {}
+          try { await supabaseAdmin.from('evaluation_score_history').delete().in('team_id', chunk); } catch {}
+          try { await supabaseAdmin.from('evaluations').delete().in('team_id', chunk); } catch {}
+          try { await supabaseAdmin.from('jury_assignments').delete().in('team_id', chunk); } catch {}
+          await supabaseAdmin.from('teams').delete().in('id', chunk);
+        }
+      }
+    }
+
+    try {
+      await logAction(req.user.id, 'teams.bulk_deleted', 'team', null,
+        { count: deletedCount, all: !!all }, getClientIp(req));
+    } catch (logErr) {
+      console.warn('Audit log error on bulk delete:', logErr.message);
+    }
+
+    res.json({ message: `Successfully deleted ${deletedCount} team(s)`, count: deletedCount });
+  } catch (error) {
+    console.error('Bulk delete teams error:', error);
+    res.status(500).json({ error: error.message || 'Failed to bulk delete teams', code: 'INTERNAL_ERROR' });
+  }
+});
+
+/**
  * PUT /api/teams/:id
  * Update a team
  */

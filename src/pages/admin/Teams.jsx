@@ -17,6 +17,11 @@ export default function AdminTeams() {
   const [showBulkAssign, setShowBulkAssign] = useState(false);
   const [bulkJuryId, setBulkJuryId] = useState('');
   const [autoAssigning, setAutoAssigning] = useState(false);
+  const [deletingBulk, setDeletingBulk] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
+  const [deleteAllConfirmText, setDeleteAllConfirmText] = useState('');
+  const [selectAllAcrossPages, setSelectAllAcrossPages] = useState(false);
 
   const initialForm = {
     team_code: '', team_name: '', problem_statement_id: '', problem_statement_title: '',
@@ -67,11 +72,54 @@ export default function AdminTeams() {
 
   const allSelected = teams.length > 0 && selectedTeams.length === teams.length;
   const toggleSelectAll = () => {
-    if (allSelected) setSelectedTeams([]);
-    else setSelectedTeams(teams.map(t => t.id));
+    if (allSelected) {
+      setSelectedTeams([]);
+      setSelectAllAcrossPages(false);
+    } else {
+      setSelectedTeams(teams.map(t => t.id));
+    }
   };
   const toggleSelectTeam = (id) => {
+    setSelectAllAcrossPages(false);
     setSelectedTeams(prev => prev.includes(id) ? prev.filter(t => t !== id) : [...prev, id]);
+  };
+
+  const handleDeleteSelected = async () => {
+    setDeletingBulk(true);
+    try {
+      const payload = selectAllAcrossPages ? { all: true } : { team_ids: selectedTeams };
+      const res = await api.post('/teams/bulk-delete', payload);
+      toast.success(res.message || 'Teams deleted successfully');
+      setSelectedTeams([]);
+      setSelectAllAcrossPages(false);
+      setShowDeleteModal(false);
+      fetchTeams();
+    } catch (err) {
+      toast.error(err.message || 'Failed to delete selected teams');
+    } finally {
+      setDeletingBulk(false);
+    }
+  };
+
+  const handleDeleteAllTeams = async () => {
+    if (deleteAllConfirmText.trim().toUpperCase() !== 'DELETE ALL') {
+      toast.error('Please type DELETE ALL to confirm');
+      return;
+    }
+    setDeletingBulk(true);
+    try {
+      const res = await api.post('/teams/bulk-delete', { all: true });
+      toast.success(res.message || 'All teams deleted successfully');
+      setSelectedTeams([]);
+      setSelectAllAcrossPages(false);
+      setShowDeleteAllModal(false);
+      setDeleteAllConfirmText('');
+      fetchTeams();
+    } catch (err) {
+      toast.error(err.message || 'Failed to delete all teams');
+    } finally {
+      setDeletingBulk(false);
+    }
   };
 
   const handleAutoAssignSelected = async () => {
@@ -126,6 +174,13 @@ export default function AdminTeams() {
           <Link to="/admin/assignments" className="btn btn-secondary">⚡ Assignments Panel</Link>
           <Link to="/admin/import" className="btn btn-secondary">📥 Import</Link>
           <button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ Create Team</button>
+          <button
+            className="btn btn-secondary"
+            style={{ color: 'var(--color-error, #ef4444)', borderColor: 'rgba(239, 68, 68, 0.4)' }}
+            onClick={() => { setShowDeleteAllModal(true); setDeleteAllConfirmText(''); }}
+          >
+            🗑️ Delete All Teams
+          </button>
         </div>
       </div>
 
@@ -133,42 +188,97 @@ export default function AdminTeams() {
       {selectedTeams.length > 0 && (
         <div style={{
           display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          flexWrap: 'wrap',
-          gap: 'var(--space-3)',
+          flexDirection: 'column',
+          gap: 'var(--space-2)',
           padding: 'var(--space-3) var(--space-4)',
           background: 'rgba(79, 70, 229, 0.08)',
           border: '1.5px solid var(--color-primary-light, #818cf8)',
           borderRadius: 'var(--radius-md)',
           marginBottom: 'var(--space-4)'
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontWeight: 600 }}>
-            <span>🎯</span>
-            <span>{selectedTeams.length} teams selected</span>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: 'var(--space-3)'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontWeight: 600 }}>
+              <span>🎯</span>
+              <span>
+                {selectAllAcrossPages 
+                  ? `All ${pagination?.total || teams.length} teams across all pages selected` 
+                  : `${selectedTeams.length} teams selected`}
+              </span>
+            </div>
+            <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap', alignItems: 'center' }}>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={handleAutoAssignSelected}
+                disabled={autoAssigning || activeJuries.length === 0}
+              >
+                {autoAssigning ? 'Assigning...' : `⚡ Auto-Assign (${activeJuries.length} Judges)`}
+              </button>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => setShowBulkAssign(true)}
+                disabled={activeJuries.length === 0}
+              >
+                👤 Assign to Specific Judge...
+              </button>
+              <button
+                className="btn btn-sm"
+                style={{ background: 'var(--color-error, #ef4444)', color: '#fff', border: 'none' }}
+                onClick={() => setShowDeleteModal(true)}
+                disabled={deletingBulk}
+              >
+                🗑️ Delete Selected ({selectAllAcrossPages ? pagination?.total : selectedTeams.length})
+              </button>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => { setSelectedTeams([]); setSelectAllAcrossPages(false); }}
+              >
+                Clear Selection
+              </button>
+            </div>
           </div>
-          <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
-            <button
-              className="btn btn-primary btn-sm"
-              onClick={handleAutoAssignSelected}
-              disabled={autoAssigning || activeJuries.length === 0}
-            >
-              {autoAssigning ? 'Assigning...' : `⚡ Auto-Assign (${activeJuries.length} Judges)`}
-            </button>
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={() => setShowBulkAssign(true)}
-              disabled={activeJuries.length === 0}
-            >
-              👤 Assign to Specific Judge...
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => setSelectedTeams([])}
-            >
-              Clear Selection
-            </button>
-          </div>
+
+          {/* Across-pages selection banner */}
+          {allSelected && pagination?.total > teams.length && (
+            <div style={{
+              fontSize: 'var(--text-sm)',
+              padding: 'var(--space-2) var(--space-3)',
+              background: 'var(--color-bg-surface)',
+              borderRadius: 'var(--radius-sm)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              border: '1px dashed var(--color-primary-light, #818cf8)'
+            }}>
+              <span>
+                {selectAllAcrossPages 
+                  ? `All ${pagination.total} teams in the database are selected for bulk action.`
+                  : `All ${teams.length} teams on this page are selected.`}
+              </span>
+              {!selectAllAcrossPages ? (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  style={{ color: 'var(--color-accent)', textDecoration: 'underline', padding: 0 }}
+                  onClick={() => setSelectAllAcrossPages(true)}
+                >
+                  Select all {pagination.total} teams across all pages
+                </button>
+              ) : (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  style={{ color: 'var(--color-text-secondary)', textDecoration: 'underline', padding: 0 }}
+                  onClick={() => setSelectAllAcrossPages(false)}
+                >
+                  Clear across-page selection
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -446,6 +556,105 @@ export default function AdminTeams() {
               <button className="btn btn-secondary" onClick={() => setShowBulkAssign(false)}>Cancel</button>
               <button className="btn btn-primary" onClick={handleBulkAssignToJudge} disabled={!bulkJuryId}>
                 Assign {selectedTeams.length} Teams
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Delete Selected Teams Modal */}
+      {showDeleteModal && (
+        <div className="modal-overlay" onClick={() => !deletingBulk && setShowDeleteModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="modal-title" style={{ color: 'var(--color-error, #ef4444)' }}>
+                🗑️ Delete Selected Teams
+              </h3>
+              <button className="modal-close" onClick={() => !deletingBulk && setShowDeleteModal(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p style={{ marginBottom: 'var(--space-3)', fontSize: 'var(--text-base)' }}>
+                Are you sure you want to permanently delete <strong>{selectAllAcrossPages ? (pagination?.total || teams.length) : selectedTeams.length}</strong> selected team(s)?
+              </p>
+              <div style={{
+                padding: 'var(--space-3)',
+                background: 'rgba(239, 68, 68, 0.08)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                borderRadius: 'var(--radius-md)',
+                color: 'var(--color-error, #ef4444)',
+                fontSize: 'var(--text-sm)',
+                lineHeight: 1.5
+              }}>
+                ⚠️ <strong>Warning:</strong> This will also remove all student roster members, jury assignments, criteria scores, and evaluations for these teams. This action cannot be undone.
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setShowDeleteModal(false)} disabled={deletingBulk}>
+                Cancel
+              </button>
+              <button
+                className="btn"
+                style={{ background: 'var(--color-error, #ef4444)', color: '#fff', border: 'none' }}
+                onClick={handleDeleteSelected}
+                disabled={deletingBulk}
+              >
+                {deletingBulk ? 'Deleting...' : `Permanently Delete ${selectAllAcrossPages ? (pagination?.total || teams.length) : selectedTeams.length} Team(s)`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete All Teams Danger Modal */}
+      {showDeleteAllModal && (
+        <div className="modal-overlay" onClick={() => !deletingBulk && setShowDeleteAllModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="modal-title" style={{ color: 'var(--color-error, #ef4444)' }}>
+                ⚠️ Danger: Delete ALL Teams in Database
+              </h3>
+              <button className="modal-close" onClick={() => !deletingBulk && setShowDeleteAllModal(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <div style={{
+                padding: 'var(--space-3)',
+                background: 'rgba(239, 68, 68, 0.1)',
+                border: '1.5px solid rgba(239, 68, 68, 0.4)',
+                borderRadius: 'var(--radius-md)',
+                color: 'var(--color-error, #ef4444)',
+                marginBottom: 'var(--space-4)',
+                fontSize: 'var(--text-sm)',
+                lineHeight: 1.5
+              }}>
+                <strong>CRITICAL ACTION:</strong> This will permanently erase <strong>ALL {pagination?.total || teams.length} teams</strong> currently registered in the database. Every team roster, student member, judge assignment, evaluation, and score in the entire system will be wiped clean.
+              </div>
+              <p style={{ fontSize: 'var(--text-sm)', marginBottom: 'var(--space-2)' }}>
+                To confirm this permanent action, please type <strong style={{ color: 'var(--color-error, #ef4444)' }}>DELETE ALL</strong> in the box below:
+              </p>
+              <input
+                className="input"
+                placeholder="Type DELETE ALL to confirm"
+                value={deleteAllConfirmText}
+                onChange={e => setDeleteAllConfirmText(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setShowDeleteAllModal(false)} disabled={deletingBulk}>
+                Cancel
+              </button>
+              <button
+                className="btn"
+                style={{
+                  background: deleteAllConfirmText.trim() === 'DELETE ALL' ? 'var(--color-error, #ef4444)' : '#9ca3af',
+                  color: '#fff',
+                  border: 'none',
+                  cursor: deleteAllConfirmText.trim() === 'DELETE ALL' ? 'pointer' : 'not-allowed'
+                }}
+                onClick={handleDeleteAllTeams}
+                disabled={deletingBulk || deleteAllConfirmText.trim() !== 'DELETE ALL'}
+              >
+                {deletingBulk ? 'Deleting Everything...' : 'Permanently Delete All Teams'}
               </button>
             </div>
           </div>
