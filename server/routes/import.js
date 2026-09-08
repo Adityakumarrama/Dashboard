@@ -429,15 +429,131 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
   }
 });
 
+// ============================================================
+// HIGH-PERFORMANCE BATCH HELPERS FOR IMPORT CONFIRMATION
+// ============================================================
+
+async function batchInsertTeams(rows) {
+  if (!rows || rows.length === 0) return [];
+  const CHUNK_SIZE = 50;
+  const columns = [
+    'team_code', 'team_name', 'problem_statement_id', 'problem_statement_title',
+    'organization', 'category', 'track', 'team_leader', 'team_members',
+    'contact_info', 'department', 'course', 'leader_phone', 'leader_email',
+    'leader_enrollment', 'submitter_email', 'raw_data'
+  ];
+  const inserted = [];
+
+  for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+    const chunk = rows.slice(i, i + CHUNK_SIZE);
+    try {
+      const placeholders = [];
+      const params = [];
+      let pIdx = 1;
+
+      for (const row of chunk) {
+        const rowVals = [];
+        for (const col of columns) {
+          rowVals.push(`$${pIdx++}`);
+          params.push(row[col] !== undefined ? row[col] : null);
+        }
+        placeholders.push(`(${rowVals.join(', ')})`);
+      }
+
+      const sql = `INSERT INTO teams (${columns.join(', ')}) VALUES ${placeholders.join(', ')} RETURNING id, team_code`;
+      const res = await query(sql, params);
+      if (res?.rows) {
+        inserted.push(...res.rows);
+      }
+    } catch (pgErr) {
+      console.warn('Postgres batchInsertTeams fallback to Supabase REST:', pgErr.message);
+      const cleanChunk = chunk.map(r => {
+        const obj = {};
+        for (const col of columns) {
+          if (r[col] !== undefined) {
+            if ((col === 'team_members' || col === 'raw_data') && typeof r[col] === 'string') {
+              try { obj[col] = JSON.parse(r[col]); } catch { obj[col] = r[col]; }
+            } else {
+              obj[col] = r[col];
+            }
+          }
+        }
+        return obj;
+      });
+
+      const { data, error: supaErr } = await supabaseAdmin
+        .from('teams')
+        .insert(cleanChunk)
+        .select('id, team_code');
+
+      if (supaErr) {
+        console.error('Supabase batchInsertTeams error:', supaErr.message);
+        throw supaErr;
+      }
+      if (data) {
+        inserted.push(...data);
+      }
+    }
+  }
+  return inserted;
+}
+
+async function batchInsertRows(tableName, columns, rows, onConflictClause = '') {
+  if (!rows || rows.length === 0) return [];
+  const CHUNK_SIZE = 50;
+
+  for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+    const chunk = rows.slice(i, i + CHUNK_SIZE);
+    try {
+      const placeholders = [];
+      const params = [];
+      let pIdx = 1;
+
+      for (const row of chunk) {
+        const rowVals = [];
+        for (const col of columns) {
+          rowVals.push(`$${pIdx++}`);
+          params.push(row[col] !== undefined ? row[col] : null);
+        }
+        placeholders.push(`(${rowVals.join(', ')})`);
+      }
+
+      const sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${placeholders.join(', ')} ${onConflictClause}`;
+      await query(sql, params);
+    } catch (pgErr) {
+      console.warn(`Postgres batchInsertRows to ${tableName} fallback to Supabase REST:`, pgErr.message);
+      const cleanChunk = chunk.map(r => {
+        const obj = {};
+        for (const col of columns) {
+          if (r[col] !== undefined) obj[col] = r[col];
+        }
+        return obj;
+      });
+
+      let queryBuilder = supabaseAdmin.from(tableName);
+      if (onConflictClause && onConflictClause.includes('DO NOTHING')) {
+        queryBuilder = queryBuilder.upsert(cleanChunk, { onConflict: 'user_id,team_id', ignoreDuplicates: true });
+      } else {
+        queryBuilder = queryBuilder.insert(cleanChunk);
+      }
+
+      const { error: supaErr } = await queryBuilder;
+      if (supaErr) {
+        console.warn(`Supabase fallback error for ${tableName}:`, supaErr.message);
+      }
+    }
+  }
+}
+
 /**
  * POST /api/import/confirm
- * Execute the import with validated records
+ * Execute the import with validated records in ultra-fast batched queries
  */
 router.post('/confirm', authenticate, requireAdmin, async (req, res) => {
   try {
     const { 
       records, 
-      duplicateStrategy, 
+      duplicateStrategy = 'skip', 
       fileName, 
       fileType, 
       assignmentStrategy = 'auto_round_robin', 
@@ -467,220 +583,249 @@ router.post('/confirm', authenticate, requireAdmin, async (req, res) => {
     }
 
     let created = 0, updated = 0, skipped = 0, failed = 0, assigned = 0;
-    const insertedTeams = [];
+    const insertedTeamIds = [];
+    const processedTeamsWithMembers = [];
+
+    // 1. Batch pre-fetch all existing teams in 1 single database query
+    const allCleanCodes = records.map(r => sanitize(r.team_code)).filter(Boolean);
+    let existingTeams = [];
+    try {
+      existingTeams = await queryAll(
+        'SELECT id, team_code FROM teams WHERE team_code = ANY($1)',
+        [allCleanCodes]
+      );
+    } catch {
+      const { data } = await supabaseAdmin
+        .from('teams')
+        .select('id, team_code')
+        .in('team_code', allCleanCodes);
+      existingTeams = data || [];
+    }
+    const existingMap = new Map();
+    for (const t of existingTeams) {
+      if (t.team_code) existingMap.set(t.team_code.toLowerCase(), t.id);
+    }
+
+    // 2. Categorize records into toCreate, toUpdate, toSkip in memory
+    const toCreate = [];
+    const toUpdate = [];
 
     for (const record of records) {
-      try {
-        const { _rowIndex, _reason, ...teamData } = record;
-        const cleanCode = sanitize(teamData.team_code);
-        const cleanName = sanitize(teamData.team_name);
-
-        let existing = null;
-        try {
-          existing = await queryOne('SELECT id FROM teams WHERE team_code = $1', [cleanCode]);
-        } catch {
-          const { data } = await supabaseAdmin.from('teams').select('id').eq('team_code', cleanCode).maybeSingle();
-          existing = data;
-        }
-
-        const teamPayload = {
-          team_code: cleanCode,
-          team_name: cleanName,
-          problem_statement_id: teamData.problem_statement_id || null,
-          problem_statement_title: teamData.problem_statement_title || null,
-          organization: teamData.organization || 'Rama University (F.E.T)',
-          department: teamData.department || null,
-          course: teamData.course || null,
-          category: teamData.category || 'Software',
-          track: teamData.track || teamData.department || 'Technology',
-          team_leader: teamData.team_leader || null,
-          leader_phone: teamData.leader_phone || null,
-          leader_email: teamData.leader_email || null,
-          leader_enrollment: teamData.leader_enrollment || null,
-          submitter_email: teamData.submitter_email || null,
-          contact_info: teamData.contact_info || null,
-          team_members: Array.isArray(teamData.team_members) ? teamData.team_members : [],
-          raw_data: teamData.raw_data || null,
-        };
-
-        let currentTeamId = null;
-
-        if (existing) {
-          if (duplicateStrategy === 'update' || duplicateStrategy === 'replace') {
-            try {
-              await query(
-                `UPDATE teams SET
-                  team_name = COALESCE($1, team_name),
-                  problem_statement_id = COALESCE($2, problem_statement_id),
-                  problem_statement_title = COALESCE($3, problem_statement_title),
-                  organization = COALESCE($4, organization),
-                  category = COALESCE($5, category),
-                  track = COALESCE($6, track),
-                  team_leader = COALESCE($7, team_leader),
-                  team_members = COALESCE($8, team_members),
-                  contact_info = COALESCE($9, contact_info),
-                  department = COALESCE($10, department),
-                  course = COALESCE($11, course),
-                  leader_phone = COALESCE($12, leader_phone),
-                  leader_email = COALESCE($13, leader_email),
-                  leader_enrollment = COALESCE($14, leader_enrollment),
-                  submitter_email = COALESCE($15, submitter_email)
-                 WHERE id = $16`,
-                [
-                  teamPayload.team_name, teamPayload.problem_statement_id, teamPayload.problem_statement_title,
-                  teamPayload.organization, teamPayload.category, teamPayload.track,
-                  teamPayload.team_leader, JSON.stringify(teamPayload.team_members),
-                  teamPayload.contact_info, teamPayload.department, teamPayload.course,
-                  teamPayload.leader_phone, teamPayload.leader_email, teamPayload.leader_enrollment,
-                  teamPayload.submitter_email, existing.id,
-                ]
-              );
-            } catch {
-              await supabaseAdmin.from('teams').update(teamPayload).eq('id', existing.id);
-            }
-            currentTeamId = existing.id;
-            updated++;
-          } else {
-            skipped++;
-            continue;
-          }
-        } else {
-          try {
-            const insRes = await queryOne(
-              `INSERT INTO teams (
-                team_code, team_name, problem_statement_id, problem_statement_title,
-                organization, category, track, team_leader, team_members, contact_info,
-                department, course, leader_phone, leader_email, leader_enrollment, submitter_email, raw_data
-              )
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-              RETURNING id`,
-              [
-                teamPayload.team_code, teamPayload.team_name, teamPayload.problem_statement_id,
-                teamPayload.problem_statement_title, teamPayload.organization, teamPayload.category,
-                teamPayload.track, teamPayload.team_leader, JSON.stringify(teamPayload.team_members),
-                teamPayload.contact_info, teamPayload.department, teamPayload.course,
-                teamPayload.leader_phone, teamPayload.leader_email, teamPayload.leader_enrollment,
-                teamPayload.submitter_email, teamPayload.raw_data ? JSON.stringify(teamPayload.raw_data) : null,
-              ]
-            );
-            currentTeamId = insRes?.id;
-          } catch {
-            const { data } = await supabaseAdmin.from('teams').insert(teamPayload).select('id').single();
-            currentTeamId = data?.id;
-          }
-          created++;
-          if (currentTeamId) insertedTeams.push(currentTeamId);
-        }
-
-        // Insert/update relational rows into master_team_member_details and team_members
-        if (currentTeamId && Array.isArray(teamPayload.team_members) && teamPayload.team_members.length > 0) {
-          try {
-            await query('DELETE FROM team_members WHERE team_id = $1', [currentTeamId]);
-            await query('DELETE FROM master_team_member_details WHERE team_id = $1', [currentTeamId]);
-
-            for (const m of teamPayload.team_members) {
-              const mContact = m.contact || m.phone || null;
-              const mCourse = m.course || teamPayload.course || null;
-              const mDept = m.department || teamPayload.department || null;
-              const rawYr = m.member_year || m.academic_year || m.year || teamPayload.academic_year || null;
-              const mYear = rawYr ? parseInt(String(rawYr).replace(/[^0-9]/g, ''), 10) || null : null;
-
-              // Insert into team_members
-              await query(
-                `INSERT INTO team_members (
-                  team_id, team_code, member_number, name, email, 
-                  enrollment_number, gender, department, course, contact, academic_year, is_girl_member
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-                [
-                  currentTeamId, teamPayload.team_code, m.member_number, m.name, 
-                  m.email || null, m.enrollment_number || null, m.gender || null, 
-                  mDept, mCourse, mContact, mYear, !!m.is_girl_member
-                ]
-              );
-
-              // Insert into master_team_member_details
-              await query(
-                `INSERT INTO master_team_member_details (
-                  team_id, team_code, member_number, member_name, member_email, 
-                  member_enrolment, member_contact, member_department, member_course, member_year,
-                  gender, is_girl_member
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-                [
-                  currentTeamId, teamPayload.team_code, m.member_number, m.name, 
-                  m.email || null, m.enrollment_number || null, mContact, 
-                  mDept, mCourse, mYear, m.gender || null, !!m.is_girl_member
-                ]
-              );
-            }
-          } catch (mErr) {
-            console.warn('Postgres member relational insert fallback to Supabase REST:', mErr.message);
-            try {
-              await supabaseAdmin.from('team_members').delete().eq('team_id', currentTeamId);
-              await supabaseAdmin.from('master_team_member_details').delete().eq('team_id', currentTeamId);
-
-              const memberInserts = teamPayload.team_members.map(m => {
-                const rawYr = m.member_year || m.academic_year || m.year || teamPayload.academic_year || null;
-                const mYear = rawYr ? parseInt(String(rawYr).replace(/[^0-9]/g, ''), 10) || null : null;
-                return {
-                  team_id: currentTeamId,
-                  team_code: teamPayload.team_code,
-                  member_number: m.member_number,
-                  name: m.name,
-                  email: m.email || null,
-                  enrollment_number: m.enrollment_number || null,
-                  gender: m.gender || null,
-                  department: m.department || teamPayload.department || null,
-                  course: m.course || teamPayload.course || null,
-                  contact: m.contact || m.phone || null,
-                  academic_year: mYear,
-                  is_girl_member: !!m.is_girl_member,
-                };
-              });
-              await supabaseAdmin.from('team_members').insert(memberInserts);
-
-              const masterInserts = teamPayload.team_members.map(m => {
-                const rawYr = m.member_year || m.academic_year || m.year || teamPayload.academic_year || null;
-                const mYear = rawYr ? parseInt(String(rawYr).replace(/[^0-9]/g, ''), 10) || null : null;
-                return {
-                  team_id: currentTeamId,
-                  team_code: teamPayload.team_code,
-                  member_number: m.member_number,
-                  member_name: m.name,
-                  member_email: m.email || null,
-                  member_enrolment: m.enrollment_number || null,
-                  member_contact: m.contact || m.phone || null,
-                  member_department: m.department || teamPayload.department || null,
-                  member_course: m.course || teamPayload.course || null,
-                  member_year: mYear,
-                  gender: m.gender || null,
-                  is_girl_member: !!m.is_girl_member,
-                };
-              });
-              await supabaseAdmin.from('master_team_member_details').insert(masterInserts);
-            } catch (supaErr) {
-              console.warn('Supabase member relational insert fallback error:', supaErr.message);
-            }
-          }
-        }
-      } catch (e) {
+      const { _rowIndex, _reason, ...teamData } = record;
+      const cleanCode = sanitize(teamData.team_code);
+      const cleanName = sanitize(teamData.team_name);
+      if (!cleanCode || !cleanName) {
         failed++;
-        console.error('Record import error:', e);
-        if (importRecord?.id) {
-          try {
-            await query(
-              'INSERT INTO import_errors (import_id, row_number, error, raw_data) VALUES ($1, $2, $3, $4)',
-              [importRecord.id, record._rowIndex || 0, e.message, JSON.stringify(record)]
-            );
-          } catch {}
+        continue;
+      }
+
+      const existingId = existingMap.get(cleanCode.toLowerCase());
+
+      const teamPayload = {
+        team_code: cleanCode,
+        team_name: cleanName,
+        problem_statement_id: teamData.problem_statement_id || null,
+        problem_statement_title: teamData.problem_statement_title || null,
+        organization: teamData.organization || 'Rama University (F.E.T)',
+        department: teamData.department || null,
+        course: teamData.course || null,
+        category: teamData.category || 'Software',
+        track: teamData.track || teamData.department || 'Technology',
+        team_leader: teamData.team_leader || null,
+        leader_phone: teamData.leader_phone || null,
+        leader_email: teamData.leader_email || null,
+        leader_enrollment: teamData.leader_enrollment || null,
+        submitter_email: teamData.submitter_email || null,
+        contact_info: teamData.contact_info || null,
+        team_members: JSON.stringify(Array.isArray(teamData.team_members) ? teamData.team_members : []),
+        raw_data: teamData.raw_data ? JSON.stringify(teamData.raw_data) : null,
+        _originalMembers: Array.isArray(teamData.team_members) ? teamData.team_members : [],
+        academic_year: teamData.academic_year || null,
+      };
+
+      if (existingId) {
+        if (duplicateStrategy === 'update' || duplicateStrategy === 'replace') {
+          toUpdate.push({ existingId, payload: teamPayload });
+        } else {
+          skipped++;
         }
+      } else {
+        toCreate.push(teamPayload);
       }
     }
 
-    // Assign new teams according to admin's chosen assignmentStrategy
-    if (insertedTeams.length > 0 && assignmentStrategy !== 'none') {
+    // 3. Batch insert new teams in ONE multi-row query
+    if (toCreate.length > 0) {
+      try {
+        const insertedRows = await batchInsertTeams(toCreate);
+        const insertedIdMap = new Map();
+        for (const row of insertedRows) {
+          if (row.team_code) insertedIdMap.set(row.team_code.toLowerCase(), row.id);
+        }
+
+        for (const payload of toCreate) {
+          const teamId = insertedIdMap.get(payload.team_code.toLowerCase());
+          if (teamId) {
+            insertedTeamIds.push(teamId);
+            created++;
+            if (payload._originalMembers && payload._originalMembers.length > 0) {
+              processedTeamsWithMembers.push({
+                teamId,
+                teamCode: payload.team_code,
+                members: payload._originalMembers,
+                department: payload.department,
+                course: payload.course,
+                academicYear: payload.academic_year,
+              });
+            }
+          }
+        }
+      } catch (insertErr) {
+        console.error('Batch team insert error:', insertErr);
+        failed += toCreate.length;
+      }
+    }
+
+    // 4. Concurrent update for existing duplicate teams (if update selected)
+    if (toUpdate.length > 0) {
+      await Promise.allSettled(
+        toUpdate.map(async ({ existingId, payload }) => {
+          try {
+            await query(
+              `UPDATE teams SET
+                team_name = COALESCE($1, team_name),
+                problem_statement_id = COALESCE($2, problem_statement_id),
+                problem_statement_title = COALESCE($3, problem_statement_title),
+                organization = COALESCE($4, organization),
+                category = COALESCE($5, category),
+                track = COALESCE($6, track),
+                team_leader = COALESCE($7, team_leader),
+                team_members = COALESCE($8, team_members),
+                contact_info = COALESCE($9, contact_info),
+                department = COALESCE($10, department),
+                course = COALESCE($11, course),
+                leader_phone = COALESCE($12, leader_phone),
+                leader_email = COALESCE($13, leader_email),
+                leader_enrollment = COALESCE($14, leader_enrollment),
+                submitter_email = COALESCE($15, submitter_email)
+               WHERE id = $16`,
+              [
+                payload.team_name, payload.problem_statement_id, payload.problem_statement_title,
+                payload.organization, payload.category, payload.track,
+                payload.team_leader, payload.team_members,
+                payload.contact_info, payload.department, payload.course,
+                payload.leader_phone, payload.leader_email, payload.leader_enrollment,
+                payload.submitter_email, existingId,
+              ]
+            );
+            updated++;
+            if (payload._originalMembers && payload._originalMembers.length > 0) {
+              processedTeamsWithMembers.push({
+                teamId: existingId,
+                teamCode: payload.team_code,
+                members: payload._originalMembers,
+                department: payload.department,
+                course: payload.course,
+                academicYear: payload.academic_year,
+              });
+            }
+          } catch (updateErr) {
+            console.warn('Update team fallback to Supabase:', updateErr.message);
+            try {
+              const cleanPayload = { ...payload };
+              delete cleanPayload._originalMembers;
+              delete cleanPayload.team_members;
+              await supabaseAdmin.from('teams').update(cleanPayload).eq('id', existingId);
+              updated++;
+            } catch {
+              failed++;
+            }
+          }
+        })
+      );
+    }
+
+    // 5. Batch insert relational team_members and master_team_member_details
+    if (processedTeamsWithMembers.length > 0) {
+      const allTeamMembers = [];
+      const allMasterMembers = [];
+      const teamIdsWithMembers = [];
+
+      for (const item of processedTeamsWithMembers) {
+        const { teamId, teamCode, members, department, course, academicYear } = item;
+        teamIdsWithMembers.push(teamId);
+
+        for (const m of members) {
+          const mContact = m.contact || m.phone || null;
+          const mCourse = m.course || course || null;
+          const mDept = m.department || department || null;
+          const rawYr = m.member_year || m.academic_year || m.year || academicYear || null;
+          const mYear = rawYr ? parseInt(String(rawYr).replace(/[^0-9]/g, ''), 10) || null : null;
+
+          allTeamMembers.push({
+            team_id: teamId,
+            team_code: teamCode,
+            member_number: m.member_number,
+            name: m.name,
+            email: m.email || null,
+            enrollment_number: m.enrollment_number || null,
+            gender: m.gender || null,
+            department: mDept,
+            course: mCourse,
+            contact: mContact,
+            academic_year: mYear,
+            is_girl_member: !!m.is_girl_member,
+          });
+
+          allMasterMembers.push({
+            team_id: teamId,
+            team_code: teamCode,
+            member_number: m.member_number,
+            member_name: m.name,
+            member_email: m.email || null,
+            member_enrolment: m.enrollment_number || null,
+            member_contact: mContact,
+            member_department: mDept,
+            member_course: mCourse,
+            member_year: mYear,
+            gender: m.gender || null,
+            is_girl_member: !!m.is_girl_member,
+          });
+        }
+      }
+
+      // Batch delete old member records for updated teams
+      if (teamIdsWithMembers.length > 0) {
+        try {
+          await query('DELETE FROM team_members WHERE team_id = ANY($1)', [teamIdsWithMembers]);
+          await query('DELETE FROM master_team_member_details WHERE team_id = ANY($1)', [teamIdsWithMembers]);
+        } catch {
+          await supabaseAdmin.from('team_members').delete().in('team_id', teamIdsWithMembers);
+          await supabaseAdmin.from('master_team_member_details').delete().in('team_id', teamIdsWithMembers);
+        }
+      }
+
+      // Batch insert into team_members in chunks of 50
+      const memberCols = [
+        'team_id', 'team_code', 'member_number', 'name', 'email',
+        'enrollment_number', 'gender', 'department', 'course', 'contact',
+        'academic_year', 'is_girl_member'
+      ];
+      await batchInsertRows('team_members', memberCols, allTeamMembers);
+
+      // Batch insert into master_team_member_details in chunks of 50
+      const masterCols = [
+        'team_id', 'team_code', 'member_number', 'member_name', 'member_email',
+        'member_enrolment', 'member_contact', 'member_department', 'member_course',
+        'member_year', 'gender', 'is_girl_member'
+      ];
+      await batchInsertRows('master_team_member_details', masterCols, allMasterMembers);
+    }
+
+    // 6. Batch assign new teams to juries in ONE single operation
+    if (insertedTeamIds.length > 0 && assignmentStrategy !== 'none') {
       try {
         let targetJuries = [];
-
         if (assignmentStrategy === 'specific' && Array.isArray(selectedJuryIds) && selectedJuryIds.length > 0) {
           try {
             targetJuries = await queryAll("SELECT id FROM users WHERE id = ANY($1) AND role = 'JURY' AND status = 'active'", [selectedJuryIds]);
@@ -698,44 +843,33 @@ router.post('/confirm', authenticate, requireAdmin, async (req, res) => {
         }
 
         if (targetJuries.length > 0) {
+          const assignmentRows = [];
           if (assignmentStrategy === 'auto_all' || assignmentStrategy === 'specific') {
-            // Assign every inserted team to all target juries
-            for (const teamId of insertedTeams) {
+            for (const teamId of insertedTeamIds) {
               for (const jury of targetJuries) {
-                try {
-                  await query(
-                    'INSERT INTO jury_assignments (user_id, team_id, assigned_by) VALUES ($1, $2, $3) ON CONFLICT (user_id, team_id) DO NOTHING',
-                    [jury.id, teamId, req.user.id]
-                  );
-                } catch {
-                  await supabaseAdmin.from('jury_assignments').upsert({
-                    user_id: jury.id,
-                    team_id: teamId,
-                    assigned_by: req.user.id,
-                  }, { onConflict: 'user_id,team_id' });
-                }
-                assigned++;
-              }
-            }
-          } else if (assignmentStrategy === 'auto_round_robin') {
-            // Distribute inserted teams evenly across target juries in round-robin fashion
-            for (let i = 0; i < insertedTeams.length; i++) {
-              const teamId = insertedTeams[i];
-              const jury = targetJuries[i % targetJuries.length];
-              try {
-                await query(
-                  'INSERT INTO jury_assignments (user_id, team_id, assigned_by) VALUES ($1, $2, $3) ON CONFLICT (user_id, team_id) DO NOTHING',
-                  [jury.id, teamId, req.user.id]
-                );
-              } catch {
-                await supabaseAdmin.from('jury_assignments').upsert({
+                assignmentRows.push({
                   user_id: jury.id,
                   team_id: teamId,
                   assigned_by: req.user.id,
-                }, { onConflict: 'user_id,team_id' });
+                });
               }
-              assigned++;
             }
+          } else if (assignmentStrategy === 'auto_round_robin') {
+            for (let i = 0; i < insertedTeamIds.length; i++) {
+              const teamId = insertedTeamIds[i];
+              const jury = targetJuries[i % targetJuries.length];
+              assignmentRows.push({
+                user_id: jury.id,
+                team_id: teamId,
+                assigned_by: req.user.id,
+              });
+            }
+          }
+
+          if (assignmentRows.length > 0) {
+            const assignCols = ['user_id', 'team_id', 'assigned_by'];
+            await batchInsertRows('jury_assignments', assignCols, assignmentRows, 'ON CONFLICT (user_id, team_id) DO NOTHING');
+            assigned = assignmentRows.length;
           }
         }
       } catch (assignErr) {
@@ -743,6 +877,7 @@ router.post('/confirm', authenticate, requireAdmin, async (req, res) => {
       }
     }
 
+    // 7. Update import record status
     if (importRecord?.id) {
       try {
         await query(
