@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requireAdmin, requireAny } from '../middleware/rbac.js';
 import { query, queryOne, queryAll } from '../config/database.js';
-import { buildPaginationQuery, paginationMeta, sanitize, isValidUUID } from '../utils/helpers.js';
+import { buildPaginationQuery, paginationMeta, sanitize, isValidUUID, generateTeamCode } from '../utils/helpers.js';
 import { validateUuidParams } from '../middleware/validateUuid.js';
 import { logAction, getClientIp } from '../services/auditService.js';
 import { getTeamScores } from '../services/scoringService.js';
@@ -252,6 +252,28 @@ router.get('/lookup/:teamCode', authenticate, requireAny, async (req, res) => {
 });
 
 /**
+ * GET /api/teams/generate-code
+ * Auto-generate team code from team name in format SIH_<4_CHARS>_01
+ */
+router.get('/generate-code', authenticate, requireAny, async (req, res) => {
+  try {
+    const { name } = req.query;
+    let existingCodes = [];
+    try {
+      existingCodes = await queryAll('SELECT team_code FROM teams');
+    } catch {
+      const { data } = await supabaseAdmin.from('teams').select('team_code');
+      existingCodes = data || [];
+    }
+    const code = generateTeamCode(name || 'TEAM', existingCodes.map(r => r.team_code));
+    res.json({ code });
+  } catch (error) {
+    console.error('Generate team code error:', error);
+    res.status(500).json({ error: 'Failed to generate team code', code: 'INTERNAL_ERROR' });
+  }
+});
+
+/**
  * GET /api/teams/members/search
  * Global participant directory search by enrollment, name, email, contact, or team code
  */
@@ -457,12 +479,24 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
       department, course, leader_phone, leader_email, leader_enrollment, submitter_email,
     } = req.body;
 
-    if (!team_code || !team_name) {
-      return res.status(400).json({ error: 'Team code and name are required', code: 'VALIDATION_ERROR' });
+    if (!team_name) {
+      return res.status(400).json({ error: 'Team name is required', code: 'VALIDATION_ERROR' });
     }
 
-    const cleanCode = sanitize(team_code);
     const cleanName = sanitize(team_name);
+    let cleanCode = sanitize(team_code || '');
+
+    // Auto-generate team code in format SIH_<4_CHARS>_01 if not provided or 'AUTO'
+    if (!cleanCode || cleanCode.toUpperCase() === 'AUTO') {
+      let existingCodes = [];
+      try {
+        existingCodes = await queryAll('SELECT team_code FROM teams');
+      } catch {
+        const { data } = await supabaseAdmin.from('teams').select('team_code');
+        existingCodes = data || [];
+      }
+      cleanCode = generateTeamCode(cleanName, existingCodes.map(r => r.team_code));
+    }
 
     // Check for duplicate
     let existing = null;

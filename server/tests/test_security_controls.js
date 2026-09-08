@@ -6,6 +6,7 @@ import {
   validatePasswordStrength,
   sanitizeFileName,
   isValidUUID,
+  generateTeamCode,
 } from '../utils/helpers.js';
 import { validateUuidParams } from '../middleware/validateUuid.js';
 
@@ -93,6 +94,15 @@ console.log('\n6. Testing File Upload Sanitization & Extension Safety:');
 assert(sanitizeFileName('../../etc/passwd.csv') === 'passwd.csv', 'Path traversal stripped and base file isolated');
 assert(sanitizeFileName('file\0name.csv') === 'filename.csv', 'Null bytes stripped from filename');
 assert(sanitizeFileName('C:\\Windows\\System32\\cmd.exe.csv') === 'cmd.exe.csv', 'Windows drive path stripped from filename');
+
+// 7. Team Code Generation Format (SIH_<4 chars of team name>_01)
+console.log('\n7. Testing Team Code Format Generation (SIH_<4_CHARS>_01):');
+assert(generateTeamCode('CodeCrafters') === 'SIH_CODE_01', 'First 4 characters of team name capitalized and suffixed with _01');
+assert(generateTeamCode('Cyber Warriors') === 'SIH_CYBE_01', 'Spaces ignored and first 4 characters used');
+assert(generateTeamCode('AI') === 'SIH_AIXX_01', 'Names under 4 characters are padded with X');
+assert(generateTeamCode('CodeCrafters', ['SIH_CODE_01']) === 'SIH_CODE_02', 'Duplicate codes increment sequence counter to _02');
+assert(generateTeamCode('CodeCrafters', ['SIH_CODE_01', 'SIH_CODE_02']) === 'SIH_CODE_03', 'Sequential counter increments to _03');
+assert(generateTeamCode(null) === 'SIH_TEAM_01', 'Null team name falls back to SIH_TEAM_01');
 
 console.log(`\n============================================================`);
 console.log(`Total: ${passed + failed} | Passed: ${passed} | Failed: ${failed}`);

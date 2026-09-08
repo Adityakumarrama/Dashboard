@@ -6,7 +6,7 @@ import { requireAdmin } from '../middleware/rbac.js';
 import { upload } from '../middleware/upload.js';
 import { query, queryOne, queryAll } from '../config/database.js';
 import { logAction, getClientIp } from '../services/auditService.js';
-import { sanitize } from '../utils/helpers.js';
+import { sanitize, generateTeamCode } from '../utils/helpers.js';
 import { parse } from 'csv-parse/sync';
 import { XMLParser } from 'fast-xml-parser';
 import pdf from 'pdf-parse/lib/pdf-parse.js';
@@ -97,18 +97,9 @@ function parseRamaRow(rawCells, headers, index, usedCodes) {
   const leaderEmail = get(leaderEmailCol >= 0 ? leaderEmailCol : 8);
   const leaderEnroll = get(leaderEnrollCol >= 0 ? leaderEnrollCol : 9);
 
-  // Clean and format team code
-  let teamCode = problemCode ? problemCode.replace(/[^a-zA-Z0-9_-]/g, '-').toUpperCase() : `SIH2026-TEAM-${index + 1}`;
-  if (!teamCode.startsWith('SIH')) teamCode = `SIH-${teamCode}`;
-
-  // Ensure unique team code
-  let uniqueCode = teamCode;
-  let counter = 1;
-  while (usedCodes.has(uniqueCode.toLowerCase())) {
-    counter++;
-    uniqueCode = `${teamCode}-${String(counter).padStart(2, '0')}`;
-  }
-  usedCodes.add(uniqueCode.toLowerCase());
+  // Generate team code in format: SIH_<TEAM NAME 4 chars>_01
+  const uniqueCode = generateTeamCode(teamName, usedCodes);
+  usedCodes.add(uniqueCode.toUpperCase());
 
   // Locate Member 1 to 5 starting columns
   const mIndices = [];
@@ -364,6 +355,9 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
           if (dbField && record[header] !== undefined) {
             mapped[dbField] = sanitize(String(record[header] || ''));
           }
+        }
+        if (!mapped.team_code && mapped.team_name) {
+          mapped.team_code = generateTeamCode(mapped.team_name, [...existingCodeSet, ...seenCodes]);
         }
         return mapped;
       });

@@ -29,6 +29,7 @@ export default function AdminTeams() {
     department: '', course: '', leader_phone: '', leader_email: '', leader_enrollment: '', submitter_email: '',
   };
   const [form, setForm] = useState(initialForm);
+  const [codeManuallyEdited, setCodeManuallyEdited] = useState(false);
   const toast = useToast();
   const navigate = useNavigate();
 
@@ -50,6 +51,42 @@ export default function AdminTeams() {
       .catch(() => {});
   }, []);
 
+  const generateTeamCodeFromName = (name, currentTeams = teams) => {
+    if (!name || typeof name !== 'string') return '';
+    const clean = name.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    const namePart = (clean.slice(0, 4) || 'TEAM').padEnd(4, 'X');
+    const prefix = `SIH_${namePart}_`;
+    const existingCodes = new Set((currentTeams || []).map(t => (t.team_code || '').toUpperCase()));
+    let counter = 1;
+    let candidate = `${prefix}${String(counter).padStart(2, '0')}`;
+    while (existingCodes.has(candidate)) {
+      counter++;
+      candidate = `${prefix}${String(counter).padStart(2, '0')}`;
+    }
+    return candidate;
+  };
+
+  const handleTeamNameChange = (name) => {
+    const updated = { ...form, team_name: name };
+    if (!codeManuallyEdited || !form.team_code) {
+      updated.team_code = generateTeamCodeFromName(name);
+    }
+    setForm(updated);
+  };
+
+  const handleAutoGenerateCode = () => {
+    const autoCode = generateTeamCodeFromName(form.team_name || 'TEAM');
+    setForm(prev => ({ ...prev, team_code: autoCode }));
+    setCodeManuallyEdited(false);
+    toast.info(`Generated code: ${autoCode}`);
+  };
+
+  const openCreateModal = () => {
+    setForm(initialForm);
+    setCodeManuallyEdited(false);
+    setShowCreate(true);
+  };
+
   const handleCreate = async (e) => {
     e.preventDefault();
     try {
@@ -57,6 +94,7 @@ export default function AdminTeams() {
       toast.success('Team created successfully');
       setShowCreate(false);
       setForm(initialForm);
+      setCodeManuallyEdited(false);
       fetchTeams();
     } catch (err) { toast.error(err.message); }
   };
@@ -173,7 +211,7 @@ export default function AdminTeams() {
         <div className="page-actions">
           <Link to="/admin/assignments" className="btn btn-secondary">⚡ Assignments Panel</Link>
           <Link to="/admin/import" className="btn btn-secondary">📥 Import</Link>
-          <button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ Create Team</button>
+          <button className="btn btn-primary" onClick={openCreateModal}>+ Create Team</button>
           <button
             className="btn btn-secondary"
             style={{ color: 'var(--color-error, #ef4444)', borderColor: 'rgba(239, 68, 68, 0.4)' }}
@@ -402,12 +440,43 @@ export default function AdminTeams() {
               <div className="modal-body">
                 <div className="grid grid-2" style={{ gap: 'var(--space-4)' }}>
                   <div className="form-group">
-                    <label className="form-label">Team Code *</label>
-                    <input className="input" placeholder="SIH1523" value={form.team_code} onChange={e => setForm({...form, team_code: e.target.value})} required />
+                    <label className="form-label">Team Name *</label>
+                    <input
+                      className="input"
+                      placeholder="e.g. CodeCrafters"
+                      value={form.team_name}
+                      onChange={e => handleTeamNameChange(e.target.value)}
+                      required
+                      autoFocus
+                    />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Team Name *</label>
-                    <input className="input" placeholder="CodeCrafters" value={form.team_name} onChange={e => setForm({...form, team_name: e.target.value})} required />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-1)' }}>
+                      <label className="form-label" style={{ marginBottom: 0 }}>Team Code *</label>
+                      <button
+                        type="button"
+                        onClick={handleAutoGenerateCode}
+                        className="btn btn-ghost btn-sm"
+                        style={{ padding: '0 6px', fontSize: '11px', color: 'var(--color-primary)' }}
+                        title="Auto-generate in format: SIH_TEAMNAME_01"
+                      >
+                        ⚡ Auto Generate
+                      </button>
+                    </div>
+                    <input
+                      className="input"
+                      placeholder="SIH_CODE_01"
+                      value={form.team_code}
+                      onChange={e => {
+                        setCodeManuallyEdited(true);
+                        setForm({ ...form, team_code: e.target.value.toUpperCase() });
+                      }}
+                      required
+                      style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, letterSpacing: '0.5px' }}
+                    />
+                    <span style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '2px', display: 'block' }}>
+                      Format: <code>SIH_&lt;NAME 4 chars&gt;_01</code> (e.g. {generateTeamCodeFromName(form.team_name || 'CODE')})
+                    </span>
                   </div>
                   <div className="form-group">
                     <label className="form-label">Department</label>

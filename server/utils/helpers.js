@@ -146,3 +146,30 @@ export function isValidUUID(str) {
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   return uuidRegex.test(str.trim());
 }
+
+/**
+ * Generate a standardized team code in format: SIH_<TEAM_NAME_FIRST_4_CHARS>_01
+ * E.g., "CodeCrafters" -> "SIH_CODE_01"
+ * If duplicate, increments counter: "SIH_CODE_02", "SIH_CODE_03", etc.
+ */
+export function generateTeamCode(teamName, existingCodes = []) {
+  if (!teamName || typeof teamName !== 'string') {
+    return 'SIH_TEAM_01';
+  }
+  const clean = teamName.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+  const namePart = (clean.slice(0, 4) || 'TEAM').padEnd(4, 'X');
+  const prefix = `SIH_${namePart}_`;
+
+  const existingSet = new Set(
+    (Array.isArray(existingCodes) ? existingCodes : Array.from(existingCodes || []))
+      .map(c => String(c || '').trim().toUpperCase())
+  );
+
+  let counter = 1;
+  let candidate = `${prefix}${String(counter).padStart(2, '0')}`;
+  while (existingSet.has(candidate)) {
+    counter++;
+    candidate = `${prefix}${String(counter).padStart(2, '0')}`;
+  }
+  return candidate;
+}
