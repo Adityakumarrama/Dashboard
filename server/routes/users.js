@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requireAdmin } from '../middleware/rbac.js';
 import { query, queryOne, queryAll } from '../config/database.js';
-import { buildPaginationQuery, paginationMeta, sanitize } from '../utils/helpers.js';
+import { buildPaginationQuery, paginationMeta, sanitize, validatePasswordStrength } from '../utils/helpers.js';
+import { validateUuidParams } from '../middleware/validateUuid.js';
 import { logAction, getClientIp } from '../services/auditService.js';
 import supabaseAdmin from '../config/supabase.js';
 
@@ -105,7 +106,7 @@ router.get('/', authenticate, requireAdmin, async (req, res) => {
 /**
  * GET /api/users/:id
  */
-router.get('/:id', authenticate, requireAdmin, async (req, res) => {
+router.get('/:id', authenticate, requireAdmin, validateUuidParams('id'), async (req, res) => {
   try {
     let user = null;
     try {
@@ -154,6 +155,12 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
 
     if (!email || !password || !username || !full_name || !role) {
       return res.status(400).json({ error: 'Missing required fields', code: 'VALIDATION_ERROR' });
+    }
+
+    // Enforce password strength policy
+    const pwdValidation = validatePasswordStrength(password);
+    if (!pwdValidation.valid) {
+      return res.status(400).json({ error: pwdValidation.error, code: 'WEAK_PASSWORD' });
     }
 
     const normalizedRole = (role || '').toUpperCase();
@@ -248,7 +255,7 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
  * PUT /api/users/:id
  * Update user
  */
-router.put('/:id', authenticate, requireAdmin, async (req, res) => {
+router.put('/:id', authenticate, requireAdmin, validateUuidParams('id'), async (req, res) => {
   try {
     let existing = null;
     try {
@@ -314,7 +321,7 @@ router.put('/:id', authenticate, requireAdmin, async (req, res) => {
  * DELETE /api/users/:id
  * Permanently delete user from DB and Supabase Auth
  */
-router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
+router.delete('/:id', authenticate, requireAdmin, validateUuidParams('id'), async (req, res) => {
   try {
     let user = null;
     try {

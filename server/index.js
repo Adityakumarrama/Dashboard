@@ -1,7 +1,6 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
@@ -13,43 +12,104 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+import {
+  generalLimiter,
+  authLimiter,
+  uploadLimiter,
+  exportLimiter,
+  submissionLimiter,
+} from './middleware/rateLimiters.js';
+
+// Trust reverse proxies (Vercel, Cloudflare, AWS) for accurate IP resolution in rate-limiting
+app.set('trust proxy', 1);
+
+// Prevent fingerprinting
+app.disable('x-powered-by');
+
 // ============================================================
-// MIDDLEWARE
+// SECURITY HEADERS & CORS
 // ============================================================
 
-// Security headers
+// Content Security Policy & Security Headers via Helmet
 app.use(helmet({
-  contentSecurityPolicy: false, // Disable for dev — configure in production
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
+      imgSrc: ["'self'", "data:", "blob:", "https:"],
+      connectSrc: [
+        "'self'",
+        "https://*.supabase.co",
+        "wss://*.supabase.co",
+        ...(process.env.SUPABASE_URL ? [process.env.SUPABASE_URL] : []),
+        ...(process.env.VITE_SUPABASE_URL ? [process.env.VITE_SUPABASE_URL] : []),
+      ],
+      objectSrc: ["'none'"],
+      upgradeInsecureRequests: process.env.NODE_ENV === 'production' ? [] : null,
+    },
+  },
   crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  hsts: process.env.NODE_ENV === 'production' ? {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true,
+  } : false,
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  xContentTypeOptions: true,
+  xFrameOptions: { action: 'sameorigin' },
 }));
 
-// CORS
+// Restrict unused browser device capabilities
+app.use((req, res, next) => {
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  next();
+});
+
+// Dynamic CORS whitelist
+const defaultAllowedOrigins = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+];
+
+if (process.env.FRONTEND_URL) {
+  process.env.FRONTEND_URL.split(',').forEach(url => {
+    const trimmed = url.trim();
+    if (trimmed) defaultAllowedOrigins.push(trimmed);
+  });
+}
+
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production'
-    ? process.env.FRONTEND_URL
-    : ['http://localhost:5173', 'http://127.0.0.1:5173'],
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (defaultAllowedOrigins.includes(origin)) return callback(null, true);
+
+    try {
+      const parsed = new URL(origin);
+      if (parsed.hostname.endsWith('.vercel.app')) {
+        return callback(null, true);
+      }
+    } catch {}
+
+    if (process.env.NODE_ENV !== 'production') {
+      return callback(null, true);
+    }
+
+    callback(new Error(`CORS blocked request from origin: ${origin}`));
+  },
   credentials: true,
 }));
 
-// Rate limiting
-const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 500,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many requests, please try again later.', code: 'RATE_LIMITED' },
-});
-
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 200,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many requests, please try again later.', code: 'RATE_LIMITED' },
-});
-
+// Rate limiting (Tiered by endpoint risk level)
 app.use('/api/', generalLimiter);
 app.use('/api/auth/', authLimiter);
+app.use('/api/import/upload', uploadLimiter);
+app.use('/api/export/', exportLimiter);
+app.use('/api/evaluations/:id/submit', submissionLimiter);
 
 // Disable HTTP caching for dynamic API routes so clients never see stale data
 app.use('/api', (req, res, next) => {
@@ -59,7 +119,7 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-// Body parsing
+// Body parsing with safe size limits
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 

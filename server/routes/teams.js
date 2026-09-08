@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requireAdmin, requireAny } from '../middleware/rbac.js';
 import { query, queryOne, queryAll } from '../config/database.js';
-import { buildPaginationQuery, paginationMeta, sanitize } from '../utils/helpers.js';
+import { buildPaginationQuery, paginationMeta, sanitize, isValidUUID } from '../utils/helpers.js';
+import { validateUuidParams } from '../middleware/validateUuid.js';
 import { logAction, getClientIp } from '../services/auditService.js';
 import { getTeamScores } from '../services/scoringService.js';
 import supabaseAdmin from '../config/supabase.js';
@@ -308,7 +309,7 @@ router.get('/members/search', authenticate, requireAny, async (req, res) => {
  * GET /api/teams/:id
  * Get single team with evaluation data
  */
-router.get('/:id', authenticate, requireAny, async (req, res) => {
+router.get('/:id', authenticate, requireAny, validateUuidParams('id'), async (req, res) => {
   try {
     let team = null;
     try {
@@ -683,8 +684,11 @@ router.post('/bulk-delete', authenticate, requireAdmin, async (req, res) => {
         }
       }
     } else {
-      // Delete specific team IDs
-      const targetIds = team_ids.filter(Boolean);
+      // Delete specific team IDs (strictly filter for valid UUIDs to prevent SQL errors)
+      const targetIds = (Array.isArray(team_ids) ? team_ids : []).filter(id => isValidUUID(id));
+      if (targetIds.length === 0) {
+        return res.status(400).json({ error: 'No valid team UUIDs provided', code: 'INVALID_ID' });
+      }
       deletedCount = targetIds.length;
 
       try {
@@ -728,7 +732,7 @@ router.post('/bulk-delete', authenticate, requireAdmin, async (req, res) => {
  * PUT /api/teams/:id
  * Update a team
  */
-router.put('/:id', authenticate, requireAdmin, async (req, res) => {
+router.put('/:id', authenticate, requireAdmin, validateUuidParams('id'), async (req, res) => {
   try {
     let existing = null;
     try {
@@ -922,7 +926,7 @@ router.put('/:id', authenticate, requireAdmin, async (req, res) => {
  * DELETE /api/teams/:id
  * Permanently delete team and explicitly cascade all assignments, scores, and evaluations
  */
-router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
+router.delete('/:id', authenticate, requireAdmin, validateUuidParams('id'), async (req, res) => {
   try {
     let team = null;
     try {

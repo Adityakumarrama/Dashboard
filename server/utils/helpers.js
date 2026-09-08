@@ -24,11 +24,88 @@ export function paginationMeta(totalCount, page, limit) {
 }
 
 /**
- * Sanitize string input - trim and collapse whitespace
+ * Sanitize string input - trim and collapse whitespace, strip control chars and null bytes
  */
 export function sanitize(str) {
   if (!str || typeof str !== 'string') return '';
-  return str.trim().replace(/\s+/g, ' ');
+  return str
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // remove control chars
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * Escape dangerous HTML characters to prevent XSS
+ */
+export function escapeHtml(str) {
+  if (!str || typeof str !== 'string') return '';
+  const htmlEntities = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#x27;',
+    '/': '&#x2F;',
+  };
+  return str.replace(/[&<>"'/]/g, match => htmlEntities[match] || match);
+}
+
+/**
+ * Defend against CSV Formula Injection (CWE-1236)
+ * If a cell begins with =, +, -, @, tab, or carriage return, prepend a single quote
+ */
+export function escapeCsvCell(val) {
+  if (val === null || val === undefined) return '';
+  let str = String(val);
+  const trimmed = str.trimStart();
+  if (trimmed.length > 0 && ['=', '+', '-', '@', '\t', '\r', '%'].includes(trimmed[0])) {
+    return `'${str}`;
+  }
+  return str;
+}
+
+/**
+ * Check if an object property key is safe from prototype pollution
+ */
+export function isSafeKey(key) {
+  if (typeof key !== 'string') return false;
+  const dangerous = ['__proto__', 'constructor', 'prototype'];
+  return !dangerous.includes(key.toLowerCase().trim());
+}
+
+/**
+ * Validate strong password:
+ * - At least 8 characters
+ * - At least one letter
+ * - At least one digit
+ */
+export function validatePasswordStrength(password) {
+  if (!password || typeof password !== 'string') {
+    return { valid: false, error: 'Password is required' };
+  }
+  if (password.length < 8) {
+    return { valid: false, error: 'Password must be at least 8 characters long' };
+  }
+  if (!/[A-Za-z]/.test(password)) {
+    return { valid: false, error: 'Password must contain at least one letter' };
+  }
+  if (!/[0-9]/.test(password)) {
+    return { valid: false, error: 'Password must contain at least one number' };
+  }
+  return { valid: true };
+}
+
+/**
+ * Sanitize filename to prevent directory traversal and null byte injections
+ */
+export function sanitizeFileName(name) {
+  if (!name || typeof name !== 'string') return 'upload';
+  const clean = name.replace(/\0/g, '');
+  const base = clean.split(/[/\\]/).filter(Boolean).pop() || 'upload';
+  return base
+    .replace(/^\.+/, '') // remove leading dots
+    .replace(/[^a-zA-Z0-9._-]/g, '_') // allow only safe chars
+    || 'upload';
 }
 
 /**
@@ -65,6 +142,7 @@ export function pick(obj, fields) {
  * Check if a value is a valid UUID
  */
 export function isValidUUID(str) {
+  if (!str || typeof str !== 'string') return false;
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-  return uuidRegex.test(str);
+  return uuidRegex.test(str.trim());
 }

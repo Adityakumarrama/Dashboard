@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requireAdmin } from '../middleware/rbac.js';
 import { queryAll } from '../config/database.js';
+import { escapeCsvCell } from '../utils/helpers.js';
 
 const router = Router();
 
@@ -12,7 +13,8 @@ function toCsv(data, columns) {
     columns.map(col => {
       let val = row[col];
       if (val === null || val === undefined) return '';
-      val = String(val);
+      // Escape potential CSV formula injection (=, +, -, @, \t, \r)
+      val = escapeCsvCell(val);
       if (val.includes(',') || val.includes('"') || val.includes('\n')) {
         return `"${val.replace(/"/g, '""')}"`;
       }

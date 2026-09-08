@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requireAdmin } from '../middleware/rbac.js';
 import { query, queryOne, queryAll } from '../config/database.js';
+import { isValidUUID } from '../utils/helpers.js';
+import { validateUuidParams } from '../middleware/validateUuid.js';
 import { logAction, getClientIp } from '../services/auditService.js';
 import supabaseAdmin from '../config/supabase.js';
 
@@ -131,6 +133,10 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
 
     if (!user_id || !team_id) {
       return res.status(400).json({ error: 'user_id and team_id are required', code: 'VALIDATION_ERROR' });
+    }
+
+    if (!isValidUUID(user_id) || !isValidUUID(team_id)) {
+      return res.status(400).json({ error: 'user_id and team_id must be valid UUIDs', code: 'INVALID_UUID' });
     }
 
     // Verify jury member exists and is active
@@ -366,7 +372,7 @@ router.post('/auto-assign', authenticate, requireAdmin, async (req, res) => {
  * DELETE /api/assignments/:id
  * Remove an assignment
  */
-router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
+router.delete('/:id', authenticate, requireAdmin, validateUuidParams('id'), async (req, res) => {
   try {
     let assignment = null;
     try {

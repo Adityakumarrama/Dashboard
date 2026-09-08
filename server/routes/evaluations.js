@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requireAdmin, requireAny } from '../middleware/rbac.js';
 import { query, queryOne, queryAll } from '../config/database.js';
-import { buildPaginationQuery, paginationMeta } from '../utils/helpers.js';
+import { buildPaginationQuery, paginationMeta, isValidUUID } from '../utils/helpers.js';
+import { validateUuidParams } from '../middleware/validateUuid.js';
 import { logAction, getClientIp } from '../services/auditService.js';
 import supabaseAdmin from '../config/supabase.js';
 import {
@@ -152,7 +153,7 @@ router.get('/', authenticate, requireAny, async (req, res) => {
  * Get all evaluations for a specific team (admin only)
  * Aggregates are computed authoritatively in PostgreSQL (v_team_score_aggregates)
  */
-router.get('/team/:teamId', authenticate, requireAdmin, async (req, res) => {
+router.get('/team/:teamId', authenticate, requireAdmin, validateUuidParams('teamId'), async (req, res) => {
   try {
     let team = null;
     try {
@@ -257,7 +258,7 @@ router.get('/team/:teamId', authenticate, requireAdmin, async (req, res) => {
 /**
  * GET /api/evaluations/:id
  */
-router.get('/:id', authenticate, requireAny, async (req, res) => {
+router.get('/:id', authenticate, requireAny, validateUuidParams('id'), async (req, res) => {
   try {
     let evaluation = null;
     try {
@@ -356,6 +357,10 @@ router.post('/', authenticate, requireAny, async (req, res) => {
 
     if (!team_id) {
       return res.status(400).json({ error: 'team_id is required', code: 'VALIDATION_ERROR' });
+    }
+
+    if (!isValidUUID(team_id)) {
+      return res.status(400).json({ error: 'Invalid team_id format. Must be a valid UUID.', code: 'INVALID_UUID' });
     }
 
     // Verify team exists
@@ -563,7 +568,7 @@ router.post('/', authenticate, requireAny, async (req, res) => {
  * Save / autosave draft scores
  * Authoritatively calculated by PostgreSQL inside a transaction
  */
-router.put('/:id', authenticate, requireAny, async (req, res) => {
+router.put('/:id', authenticate, requireAny, validateUuidParams('id'), async (req, res) => {
   try {
     const updated = await saveEvaluationScores(
       req.params.id,
@@ -587,7 +592,7 @@ router.put('/:id', authenticate, requireAny, async (req, res) => {
  * Finalize and submit evaluation
  * Validates scores, locks evaluation, preserves history snapshot, and recalculates team aggregates
  */
-router.post('/:id/submit', authenticate, requireAny, async (req, res) => {
+router.post('/:id/submit', authenticate, requireAny, validateUuidParams('id'), async (req, res) => {
   try {
     const { scores, comments } = req.body;
     // CRITICAL: If scores were passed directly with the submit request, save them first
@@ -615,7 +620,7 @@ router.post('/:id/submit', authenticate, requireAny, async (req, res) => {
  * Admin reopens a submitted evaluation
  * Preserves audit history snapshot, unlocks evaluation, and recalculates aggregates
  */
-router.post('/:id/reopen', authenticate, requireAdmin, async (req, res) => {
+router.post('/:id/reopen', authenticate, requireAdmin, validateUuidParams('id'), async (req, res) => {
   try {
     const result = await reopenEvaluation(req.params.id, req.user, req.body.reason, getClientIp(req));
     res.json({

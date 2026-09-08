@@ -45,7 +45,14 @@ function isRamaFormat(headers) {
 }
 
 function parseRamaRow(rawCells, headers, index, usedCodes) {
-  const get = (idx) => (idx >= 0 && idx < rawCells.length ? sanitize(String(rawCells[idx] || '').trim()) : '');
+  const get = (idx) => {
+    if (idx < 0 || idx >= rawCells.length) return '';
+    let val = sanitize(String(rawCells[idx] || '').trim());
+    if (val.length > 0 && ['=', '+', '-', '@'].includes(val[0])) {
+      val = val.replace(/^[=+\-@]+/, '').trim();
+    }
+    return val;
+  };
 
   // Dynamic column finder by pattern matching
   const findCol = (pattern, excludePattern = null) => {
