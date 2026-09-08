@@ -16,6 +16,7 @@ export default function ImportCenter() {
   const [assignmentStrategy, setAssignmentStrategy] = useState('auto_round_robin');
   const [selectedJuries, setSelectedJuries] = useState([]);
   const [activeJuries, setActiveJuries] = useState([]);
+  const [previewTab, setPreviewTab] = useState('valid');
   const [result, setResult] = useState(null);
   const toast = useToast();
 
@@ -52,8 +53,12 @@ export default function ImportCenter() {
       return;
     }
     try {
+      const recordsToSend = dupStrategy === 'skip'
+        ? (importData.validRecords || [])
+        : [...(importData.validRecords || []), ...(importData.duplicates || [])];
+
       const data = await api.post('/import/confirm', {
-        records: importData.validRecords,
+        records: recordsToSend,
         duplicateStrategy: dupStrategy,
         assignmentStrategy,
         selectedJuryIds: selectedJuries,
@@ -211,28 +216,116 @@ export default function ImportCenter() {
       {/* Step 3: Validation */}
       {step === 3 && importData && (
         <div className="card">
-          <h3>Validation Results</h3>
-          <div className="import-summary-grid">
+          <h3>Validation & Duplicity Results</h3>
+          <div className="import-summary-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
             <div className="import-summary-item" style={{ background: 'var(--color-success-light)' }}>
-              <div className="import-summary-count" style={{ color: 'var(--color-success-dark)' }}>{importData.summary.validRecords}</div>
-              <div className="import-summary-label">Valid</div>
+              <div className="import-summary-count" style={{ color: 'var(--color-success-dark)' }}>{importData.summary?.validRecords}</div>
+              <div className="import-summary-label">Clean & Valid</div>
             </div>
             <div className="import-summary-item" style={{ background: 'var(--color-warning-light)' }}>
-              <div className="import-summary-count" style={{ color: 'var(--color-warning-dark)' }}>{importData.summary.duplicates}</div>
-              <div className="import-summary-label">Duplicates</div>
+              <div className="import-summary-count" style={{ color: 'var(--color-warning-dark)' }}>{importData.summary?.duplicates}</div>
+              <div className="import-summary-label">Flagged Duplicates</div>
+            </div>
+            <div className="import-summary-item" style={{ background: 'rgba(245, 158, 11, 0.15)', border: '1px solid rgba(245, 158, 11, 0.4)' }}>
+              <div className="import-summary-count" style={{ color: '#b45309' }}>{importData.summary?.enrollmentConflictsCount || 0}</div>
+              <div className="import-summary-label">Enrollment Collisions</div>
             </div>
             <div className="import-summary-item" style={{ background: 'var(--color-error-light)' }}>
-              <div className="import-summary-count" style={{ color: 'var(--color-error-dark)' }}>{importData.summary.errors}</div>
+              <div className="import-summary-count" style={{ color: 'var(--color-error-dark)' }}>{importData.summary?.errors}</div>
               <div className="import-summary-label">Errors</div>
             </div>
             <div className="import-summary-item" style={{ background: 'var(--color-accent-light)' }}>
-              <div className="import-summary-count" style={{ color: 'var(--color-accent-active)' }}>{importData.summary.validRecords}</div>
+              <div className="import-summary-count" style={{ color: 'var(--color-accent-active)' }}>{importData.summary?.validRecords}</div>
               <div className="import-summary-label">Ready to Import</div>
             </div>
           </div>
+
+          {/* DUPLICATE ENROLLMENT NUMBERS ALERT TABLE */}
+          {importData.enrollmentConflicts?.length > 0 && (
+            <div style={{ marginTop: 'var(--space-5)', padding: 'var(--space-4)', background: 'rgba(245, 158, 11, 0.08)', border: '1.5px solid #f59e0b', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-2)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontWeight: 700, color: '#b45309', fontSize: 'var(--text-md)' }}>
+                  <span>⚠️</span> Duplicate Enrollment Numbers Flagged ({importData.enrollmentConflicts.length})
+                </div>
+                <span className="tag" style={{ background: '#fef3c7', color: '#92400e', fontWeight: 600, border: '1px solid #fcd34d' }}>
+                  Student Collision Detected
+                </span>
+              </div>
+              <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)', marginBottom: 'var(--space-3)' }}>
+                The following student enrollment numbers appear in multiple teams or are already registered in the system. Check where each enrollment exists below:
+              </p>
+              <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-surface)' }}>
+                <table className="table" style={{ fontSize: 'var(--text-xs)', margin: 0 }}>
+                  <thead style={{ background: 'rgba(245, 158, 11, 0.1)' }}>
+                    <tr>
+                      <th style={{ color: '#92400e' }}>Enrollment No</th>
+                      <th style={{ color: '#92400e' }}>Student Name & Role</th>
+                      <th style={{ color: '#92400e' }}>Current Team (This File)</th>
+                      <th style={{ color: '#92400e' }}>Where Else This Enrollment Is</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importData.enrollmentConflicts.map((c, i) => (
+                      <tr key={i}>
+                        <td style={{ verticalAlign: 'middle' }}>
+                          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, background: '#fef3c7', padding: '3px 8px', borderRadius: 4, color: '#92400e', border: '1px solid #fcd34d', display: 'inline-block' }}>
+                            {c.enrollmentNumber}
+                          </span>
+                        </td>
+                        <td style={{ verticalAlign: 'middle' }}>
+                          <strong>{c.currentStudent}</strong>
+                          <div style={{ color: 'var(--color-text-muted)', fontSize: '11px' }}>{c.currentRole}</div>
+                        </td>
+                        <td style={{ verticalAlign: 'middle' }}>
+                          <div>Row {c.currentRow}: <strong>{c.currentTeamName}</strong></div>
+                          <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)', fontSize: '11px' }}>{c.currentTeamCode}</div>
+                        </td>
+                        <td style={{ verticalAlign: 'middle' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                            <span className={`tag ${c.conflictSource === 'Database' ? 'tag-info' : c.conflictSource === 'Same Team' ? 'tag-error' : 'tag-warning'}`} style={{ fontSize: '10px', padding: '1px 6px' }}>
+                              {c.conflictSource === 'Database' ? '🗄️ In Database' : c.conflictSource === 'Same Team' ? '👥 Same Team' : `📄 File Row ${c.conflictRow}`}
+                            </span>
+                            <strong>{c.conflictTeamName}</strong> {c.conflictTeamCode ? `(${c.conflictTeamCode})` : ''}
+                          </div>
+                          <div style={{ color: 'var(--color-text-secondary)', fontSize: '11px' }}>
+                            Registered as: <strong>{c.conflictRole}</strong> ({c.conflictStudent})
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* FLAGGED DUPLICATES SUMMARY */}
+          {importData.duplicates?.length > 0 && (
+            <div style={{ marginTop: 'var(--space-4)', padding: 'var(--space-3)', background: 'var(--color-bg-surface-alt)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ fontWeight: 600, color: 'var(--color-warning-dark)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-2)' }}>
+                📋 Flagged Duplicate Teams ({importData.duplicates.length})
+              </div>
+              <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+                {importData.duplicates.map((d, i) => (
+                  <div key={i} style={{ padding: '6px 0', borderBottom: '1px solid var(--color-border)', fontSize: 'var(--text-xs)', display: 'flex', justifyContent: 'space-between', gap: 'var(--space-2)' }}>
+                    <div>
+                      <strong>Row {d._rowIndex}: {d.team_name}</strong> <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)' }}>({d.team_code})</span>
+                      <div style={{ color: 'var(--color-text-secondary)', marginTop: 2 }}>{d._reason}</div>
+                    </div>
+                    {d._hasEnrollmentConflict && (
+                      <span className="tag tag-warning" style={{ alignSelf: 'flex-start', fontSize: '10px', whiteSpace: 'nowrap' }}>
+                        Enrollment Conflict
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {importData.validationErrors?.length > 0 && (
             <div style={{ marginTop: 'var(--space-4)' }}>
-              <h4>Errors</h4>
+              <h4>Validation Errors</h4>
               {importData.validationErrors.map((e, i) => (
                 <div key={i} style={{ padding: 'var(--space-2)', fontSize: 'var(--text-sm)', color: 'var(--color-error-dark)' }}>
                   Row {e.row} — {e.field}: {e.error}
@@ -240,6 +333,7 @@ export default function ImportCenter() {
               ))}
             </div>
           )}
+
           <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-4)' }}>
             <button className="btn btn-secondary" onClick={() => setStep(importData.isRamaFormat ? 1 : 2)}>← Back</button>
             <button className="btn btn-primary" onClick={() => setStep(4)}>Preview Records →</button>
@@ -250,7 +344,26 @@ export default function ImportCenter() {
       {/* Step 4: Preview */}
       {step === 4 && importData && (
         <div className="card">
-          <h3>Preview ({importData.validRecords?.length} records)</h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
+            <h3>Preview Records</h3>
+            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+              <button
+                className={`btn btn-sm ${previewTab === 'valid' ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => setPreviewTab('valid')}
+              >
+                ✓ Clean Valid Teams ({importData.validRecords?.length || 0})
+              </button>
+              {importData.duplicates?.length > 0 && (
+                <button
+                  className={`btn btn-sm ${previewTab === 'duplicates' ? 'btn-warning' : 'btn-ghost'}`}
+                  onClick={() => setPreviewTab('duplicates')}
+                >
+                  ⚠️ Flagged Duplicates ({importData.duplicates?.length || 0})
+                </button>
+              )}
+            </div>
+          </div>
+
           <div className="table-container" style={{ maxHeight: 400, overflow: 'auto', marginTop: 'var(--space-4)' }}>
             <table className="table">
               <thead>
@@ -264,18 +377,34 @@ export default function ImportCenter() {
                 </tr>
               </thead>
               <tbody>
-                {importData.validRecords?.slice(0, 50).map((r, i) => (
-                  <tr key={i}>
+                {((previewTab === 'valid' ? importData.validRecords : importData.duplicates) || []).slice(0, 50).map((r, i) => (
+                  <tr key={i} style={r._hasEnrollmentConflict ? { background: 'rgba(245, 158, 11, 0.04)' } : {}}>
                     <td>{r._rowIndex}</td>
                     <td style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)', fontWeight: 600 }}>{r.team_code}</td>
-                    <td><strong>{r.team_name}</strong></td>
+                    <td>
+                      <div>
+                        <strong>{r.team_name}</strong>
+                        {r._hasEnrollmentConflict && (
+                          <span className="tag tag-warning" style={{ marginLeft: 6, fontSize: '10px', padding: '1px 5px' }} title={r._reason}>
+                            ⚠️ Duplicate Enrollment
+                          </span>
+                        )}
+                      </div>
+                      {r._reason && previewTab === 'duplicates' && (
+                        <div style={{ fontSize: '11px', color: 'var(--color-warning-dark)', marginTop: 2 }}>{r._reason}</div>
+                      )}
+                    </td>
                     <td>
                       <div>{r.department || r.track || '—'}</div>
                       {r.course && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>{r.course}</div>}
                     </td>
                     <td>
                       <div>{r.team_leader || '—'}</div>
-                      {r.leader_enrollment && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)' }}>{r.leader_enrollment}</div>}
+                      {r.leader_enrollment && (
+                        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)' }}>
+                          Enrollment: <strong>{r.leader_enrollment}</strong>
+                        </div>
+                      )}
                     </td>
                     <td>
                       <span className="tag">

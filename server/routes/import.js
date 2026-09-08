@@ -204,6 +204,54 @@ function autoMapFields(detectedHeaders) {
   return mapping;
 }
 
+/**
+ * Normalizes and validates enrollment number strings
+ */
+export function normalizeEnrollment(val) {
+  if (!val) return null;
+  const s = String(val).trim();
+  const lower = s.toLowerCase();
+  // Filter out placeholders, empty, or dummy values
+  if (!s || lower === '-' || lower === '--' || lower === 'n/a' || lower === 'na' || lower === 'none' || lower === 'null' || lower === 'nil') {
+    return null;
+  }
+  if (s.length < 2) return null;
+  return s;
+}
+
+/**
+ * Extracts all participants with valid enrollment numbers from a team record
+ */
+export function extractRecordParticipants(record) {
+  const participants = [];
+
+  // 1. Team Leader
+  const leaderEnroll = normalizeEnrollment(record.leader_enrollment);
+  if (leaderEnroll) {
+    participants.push({
+      role: 'Team Leader',
+      name: record.team_leader || 'Team Leader',
+      enrollment: leaderEnroll,
+    });
+  }
+
+  // 2. Team Members
+  const members = Array.isArray(record.team_members) ? record.team_members : [];
+  members.forEach((m, mIdx) => {
+    const rawEnroll = m.enrollment_number || m.member_enrolment || m.enrollment;
+    const mEnroll = normalizeEnrollment(rawEnroll);
+    if (mEnroll) {
+      participants.push({
+        role: `Member ${m.member_number || mIdx + 1}`,
+        name: m.name || m.member_name || `Member ${mIdx + 1}`,
+        enrollment: mEnroll,
+      });
+    }
+  });
+
+  return participants;
+}
+
 function validateRecord(record, index) {
   const errors = [];
   if (!record.team_code || record.team_code.trim() === '') {
@@ -248,6 +296,108 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
     const existingCodeList = (existingCodes || []).map(t => t.team_code).filter(Boolean);
     const existingCodeSet = new Set(existingCodeList.map(c => c.toLowerCase()));
     const baseSequence = getNextTeamSequence(existingCodeList);
+
+    // Query existing participant enrollments in DB across teams & rosters to flag cross-team collisions
+    let existingEnrollments = [];
+    try {
+      existingEnrollments = await queryAll(`
+        SELECT DISTINCT
+          'Team Leader' as role,
+          t.team_leader as name,
+          t.team_code,
+          t.team_name,
+          TRIM(t.leader_enrollment) as enrollment_number
+        FROM teams t
+        WHERE t.leader_enrollment IS NOT NULL AND TRIM(t.leader_enrollment) != ''
+        UNION ALL
+        SELECT DISTINCT
+          'Member ' || COALESCE(tm.member_number::text, '1') as role,
+          tm.name,
+          COALESCE(tm.team_code, t.team_code) as team_code,
+          t.team_name,
+          TRIM(tm.enrollment_number) as enrollment_number
+        FROM team_members tm
+        JOIN teams t ON t.id = tm.team_id
+        WHERE tm.enrollment_number IS NOT NULL AND TRIM(tm.enrollment_number) != ''
+        UNION ALL
+        SELECT DISTINCT
+          'Member ' || COALESCE(m.member_number::text, '1') as role,
+          m.member_name as name,
+          COALESCE(m.team_code, t.team_code) as team_code,
+          t.team_name,
+          TRIM(m.member_enrolment) as enrollment_number
+        FROM master_team_member_details m
+        JOIN teams t ON t.id = m.team_id
+        WHERE m.member_enrolment IS NOT NULL AND TRIM(m.member_enrolment) != ''
+      `);
+    } catch (dbEnrollErr) {
+      console.warn('Postgres enrollments prefetch fallback to Supabase:', dbEnrollErr.message);
+      try {
+        const { data: teamData } = await supabaseAdmin
+          .from('teams')
+          .select('team_code, team_name, team_leader, leader_enrollment');
+        const { data: memberData } = await supabaseAdmin
+          .from('team_members')
+          .select('team_code, member_number, name, enrollment_number');
+
+        const fallbackList = [];
+        if (teamData) {
+          for (const t of teamData) {
+            if (t.leader_enrollment && t.leader_enrollment.trim()) {
+              fallbackList.push({
+                role: 'Team Leader',
+                name: t.team_leader,
+                team_code: t.team_code,
+                team_name: t.team_name,
+                enrollment_number: t.leader_enrollment.trim(),
+              });
+            }
+          }
+        }
+        if (memberData) {
+          for (const m of memberData) {
+            if (m.enrollment_number && m.enrollment_number.trim()) {
+              fallbackList.push({
+                role: `Member ${m.member_number || 1}`,
+                name: m.name,
+                team_code: m.team_code,
+                team_name: m.team_code,
+                enrollment_number: m.enrollment_number.trim(),
+              });
+            }
+          }
+        }
+        existingEnrollments = fallbackList;
+      } catch (supaErr) {
+        console.warn('Supabase fallback for enrollments error:', supaErr.message);
+        existingEnrollments = [];
+      }
+    }
+
+    // Index existing DB enrollments by lowercase enrollment number
+    const existingEnrollmentMap = new Map();
+    for (const item of existingEnrollments) {
+      const norm = normalizeEnrollment(item.enrollment_number);
+      if (!norm) continue;
+      const key = norm.toLowerCase();
+      if (!existingEnrollmentMap.has(key)) {
+        existingEnrollmentMap.set(key, []);
+      }
+      const list = existingEnrollmentMap.get(key);
+      const isAlreadyLogged = list.some(
+        x => (x.teamCode || '').toLowerCase() === (item.team_code || '').toLowerCase() && x.role === item.role
+      );
+      if (!isAlreadyLogged) {
+        list.push({
+          enrollment: norm,
+          role: item.role || 'Member',
+          name: item.name || 'Unknown',
+          teamCode: item.team_code || '—',
+          teamName: item.team_name || item.team_code || '—',
+          source: 'Database',
+        });
+      }
+    }
 
     if (ext === '.csv' || ext === '.tsv' || ext === '.txt') {
       try {
@@ -376,24 +526,146 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
       });
     }
 
-    // Validate records
+    // Validate records and check for duplicate team codes and duplicate enrollment numbers
     const validationErrors = [];
     const validRecords = [];
     const duplicates = [];
+    const allEnrollmentConflicts = [];
 
-    const seenCodes = new Set();
+    const seenCodes = new Map(); // key: lower(team_code) -> { rowIndex, teamName, teamCode }
+    const fileEnrollmentMap = new Map(); // key: lower(enrollment) -> array of { rowIndex, teamCode, teamName, role, name }
 
     mappedRecords.forEach((record, idx) => {
+      const rowIndex = idx + 1;
       const rowErrors = validateRecord(record, idx);
+
+      const participants = extractRecordParticipants(record);
+      const recordConflicts = [];
+      const currentTeamEnrollments = new Set();
+
+      for (const p of participants) {
+        const normKey = p.enrollment.toLowerCase();
+
+        // 1. Check for duplicates within the SAME team
+        if (currentTeamEnrollments.has(normKey)) {
+          const conflict = {
+            enrollmentNumber: p.enrollment,
+            currentStudent: p.name,
+            currentRole: p.role,
+            currentTeamName: record.team_name,
+            currentTeamCode: record.team_code,
+            currentRow: rowIndex,
+            conflictSource: 'Same Team',
+            conflictTeamName: record.team_name,
+            conflictTeamCode: record.team_code,
+            conflictRole: 'Another participant in same team',
+            conflictStudent: p.name,
+            message: `Enrollment ${p.enrollment} (${p.name}) is entered multiple times in team "${record.team_name}"`,
+          };
+          recordConflicts.push(conflict);
+          allEnrollmentConflicts.push(conflict);
+        }
+        currentTeamEnrollments.add(normKey);
+
+        // 2. Check for collision against existing teams in the DATABASE
+        if (existingEnrollmentMap.has(normKey)) {
+          const dbMatches = existingEnrollmentMap.get(normKey);
+          for (const match of dbMatches) {
+            // If the team in DB has the exact same code, don't flag as conflict unless it's a different team
+            const isSameTeamCode = (record.team_code || '').toLowerCase() === (match.teamCode || '').toLowerCase();
+            if (!isSameTeamCode) {
+              const conflict = {
+                enrollmentNumber: p.enrollment,
+                currentStudent: p.name,
+                currentRole: p.role,
+                currentTeamName: record.team_name,
+                currentTeamCode: record.team_code,
+                currentRow: rowIndex,
+                conflictSource: 'Database',
+                conflictTeamName: match.teamName,
+                conflictTeamCode: match.teamCode,
+                conflictRole: match.role,
+                conflictStudent: match.name,
+                message: `Enrollment ${p.enrollment} (${p.name}, ${p.role}) is already registered in Database team "${match.teamName}" (${match.teamCode}) as ${match.role} (${match.name})`,
+              };
+              recordConflicts.push(conflict);
+              allEnrollmentConflicts.push(conflict);
+            }
+          }
+        }
+
+        // 3. Check for collision against previous teams in this FILE
+        if (fileEnrollmentMap.has(normKey)) {
+          const fileMatches = fileEnrollmentMap.get(normKey);
+          for (const match of fileMatches) {
+            if (match.rowIndex !== rowIndex) {
+              const conflict = {
+                enrollmentNumber: p.enrollment,
+                currentStudent: p.name,
+                currentRole: p.role,
+                currentTeamName: record.team_name,
+                currentTeamCode: record.team_code,
+                currentRow: rowIndex,
+                conflictSource: 'Uploaded File',
+                conflictRow: match.rowIndex,
+                conflictTeamName: match.teamName,
+                conflictTeamCode: match.teamCode,
+                conflictRole: match.role,
+                conflictStudent: match.name,
+                message: `Enrollment ${p.enrollment} (${p.name}, ${p.role}) is duplicated in file at Row ${match.rowIndex}, team "${match.teamName}" (${match.teamCode}) as ${match.role} (${match.name})`,
+              };
+              recordConflicts.push(conflict);
+              allEnrollmentConflicts.push(conflict);
+            }
+          }
+        }
+
+        // Add to fileEnrollmentMap
+        if (!fileEnrollmentMap.has(normKey)) {
+          fileEnrollmentMap.set(normKey, []);
+        }
+        fileEnrollmentMap.get(normKey).push({
+          rowIndex,
+          teamCode: record.team_code,
+          teamName: record.team_name,
+          role: p.role,
+          name: p.name,
+        });
+      }
+
+      const enrichedRecord = {
+        ...record,
+        _rowIndex: rowIndex,
+        enrollment_conflicts: recordConflicts,
+        _hasEnrollmentConflict: recordConflicts.length > 0,
+      };
+
+      const codeKey = (record.team_code || '').toLowerCase();
+      const duplicateReasons = [];
+
+      if (existingCodeSet.has(codeKey)) {
+        duplicateReasons.push(`Team code ${record.team_code} already exists in database`);
+      }
+      if (seenCodes.has(codeKey)) {
+        const prev = seenCodes.get(codeKey);
+        duplicateReasons.push(`Team code ${record.team_code} duplicated in file (first seen at Row ${prev.rowIndex}, "${prev.teamName}")`);
+      }
+      if (recordConflicts.length > 0) {
+        const uniqueMessages = [...new Set(recordConflicts.map(c => c.message))];
+        duplicateReasons.push(...uniqueMessages);
+      }
+
       if (rowErrors.length > 0) {
         validationErrors.push(...rowErrors);
-      } else if (existingCodeSet.has((record.team_code || '').toLowerCase())) {
-        duplicates.push({ ...record, _rowIndex: idx + 1, _reason: 'Already exists in database' });
-      } else if (seenCodes.has((record.team_code || '').toLowerCase())) {
-        duplicates.push({ ...record, _rowIndex: idx + 1, _reason: 'Duplicate in file' });
+      } else if (duplicateReasons.length > 0) {
+        duplicates.push({
+          ...enrichedRecord,
+          _reason: duplicateReasons.join(' | '),
+          _duplicateReasons: duplicateReasons,
+        });
       } else {
-        seenCodes.add((record.team_code || '').toLowerCase());
-        validRecords.push({ ...record, _rowIndex: idx + 1 });
+        seenCodes.set(codeKey, { rowIndex, teamName: record.team_name, teamCode: record.team_code });
+        validRecords.push(enrichedRecord);
       }
     });
 
@@ -415,11 +687,13 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
         totalRecords: records.length,
         validRecords: validRecords.length,
         duplicates: duplicates.length,
+        enrollmentConflictsCount: allEnrollmentConflicts.length,
         errors: validationErrors.length,
       },
       records: mappedRecords.map((r, i) => ({ ...r, _rowIndex: i + 1 })),
       validRecords,
       duplicates,
+      enrollmentConflicts: allEnrollmentConflicts,
       validationErrors,
       parseErrors,
     });
