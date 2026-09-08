@@ -51,19 +51,27 @@ export default function AdminTeams() {
       .catch(() => {});
   }, []);
 
-  const generateTeamCodeFromName = (name, currentTeams = teams) => {
+  const getNextSequenceNumber = () => {
+    let maxSeq = 0;
+    for (const t of teams) {
+      if (!t.team_code) continue;
+      const match = String(t.team_code).trim().match(/(?:_|-)(\d+)$/);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (!isNaN(num) && num > maxSeq) maxSeq = num;
+      }
+    }
+    const count = pagination?.total || teams.length;
+    return Math.max(maxSeq, count) + 1;
+  };
+
+  const generateTeamCodeFromName = (name, seq = null) => {
     if (!name || typeof name !== 'string') return '';
     const clean = name.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
     const namePart = (clean.slice(0, 4) || 'TEAM').padEnd(4, 'X');
-    const prefix = `SIH_${namePart}_`;
-    const existingCodes = new Set((currentTeams || []).map(t => (t.team_code || '').toUpperCase()));
-    let counter = 1;
-    let candidate = `${prefix}${String(counter).padStart(2, '0')}`;
-    while (existingCodes.has(candidate)) {
-      counter++;
-      candidate = `${prefix}${String(counter).padStart(2, '0')}`;
-    }
-    return candidate;
+    const sequence = seq !== null ? seq : getNextSequenceNumber();
+    const numStr = String(sequence).padStart(2, '0');
+    return `SIH_${namePart}_${numStr}`;
   };
 
   const handleTeamNameChange = (name) => {
@@ -336,6 +344,7 @@ export default function AdminTeams() {
               <th style={{ width: 40, textAlign: 'center' }}>
                 <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} title="Select All on Page" />
               </th>
+              <th style={{ width: 45, textAlign: 'center' }}>#</th>
               <th>Team Code</th>
               <th>Team Name</th>
               <th>Department / Course</th>
@@ -348,22 +357,26 @@ export default function AdminTeams() {
           <tbody>
             {loading ? (
               [...Array(5)].map((_, i) => (
-                <tr key={i}><td colSpan="8"><div className="skeleton skeleton-text" /></td></tr>
+                <tr key={i}><td colSpan="9"><div className="skeleton skeleton-text" /></td></tr>
               ))
             ) : teams.length === 0 ? (
-              <tr><td colSpan="8" className="empty-state">
+              <tr><td colSpan="9" className="empty-state">
                 <div className="empty-state-icon">👥</div>
                 <div className="empty-state-title">No teams found</div>
                 <div className="empty-state-text">Create teams or import them from CSV/TSV</div>
               </td></tr>
             ) : (
-              teams.map(team => {
+              teams.map((team, idx) => {
                 const assigned = team.assigned_juries || [];
                 const isSelected = selectedTeams.includes(team.id);
+                const serialNumber = ((page - 1) * 25) + idx + 1;
                 return (
                   <tr key={team.id} style={{ background: isSelected ? 'rgba(79, 70, 229, 0.04)' : undefined }}>
                     <td style={{ textAlign: 'center' }}>
                       <input type="checkbox" checked={isSelected} onChange={() => toggleSelectTeam(team.id)} />
+                    </td>
+                    <td style={{ textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 'var(--text-xs)', fontWeight: 600 }}>
+                      {serialNumber}
                     </td>
                     <td>
                       <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--color-accent)' }}>
@@ -475,7 +488,7 @@ export default function AdminTeams() {
                       style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, letterSpacing: '0.5px' }}
                     />
                     <span style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '2px', display: 'block' }}>
-                      Format: <code>SIH_&lt;NAME 4 chars&gt;_01</code> (e.g. {generateTeamCodeFromName(form.team_name || 'CODE')})
+                      Format: <code>SIH_&lt;NAME 4 chars&gt;_&lt;Sr. No.&gt;</code> (e.g. {generateTeamCodeFromName(form.team_name || 'CODE')})
                     </span>
                   </div>
                   <div className="form-group">

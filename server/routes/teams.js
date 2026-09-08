@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requireAdmin, requireAny } from '../middleware/rbac.js';
 import { query, queryOne, queryAll } from '../config/database.js';
-import { buildPaginationQuery, paginationMeta, sanitize, isValidUUID, generateTeamCode } from '../utils/helpers.js';
+import { buildPaginationQuery, paginationMeta, sanitize, isValidUUID, generateTeamCode, getNextTeamSequence } from '../utils/helpers.js';
 import { validateUuidParams } from '../middleware/validateUuid.js';
 import { logAction, getClientIp } from '../services/auditService.js';
 import { getTeamScores } from '../services/scoringService.js';
@@ -257,16 +257,20 @@ router.get('/lookup/:teamCode', authenticate, requireAny, async (req, res) => {
  */
 router.get('/generate-code', authenticate, requireAny, async (req, res) => {
   try {
-    const { name } = req.query;
-    let existingCodes = [];
-    try {
-      existingCodes = await queryAll('SELECT team_code FROM teams');
-    } catch {
-      const { data } = await supabaseAdmin.from('teams').select('team_code');
-      existingCodes = data || [];
+    const { name, seq } = req.query;
+    let sequenceNumber = seq ? parseInt(seq, 10) : null;
+    if (!sequenceNumber) {
+      let existingCodes = [];
+      try {
+        existingCodes = await queryAll('SELECT team_code FROM teams');
+      } catch {
+        const { data } = await supabaseAdmin.from('teams').select('team_code');
+        existingCodes = data || [];
+      }
+      sequenceNumber = getNextTeamSequence(existingCodes.map(r => r.team_code).filter(Boolean));
     }
-    const code = generateTeamCode(name || 'TEAM', existingCodes.map(r => r.team_code));
-    res.json({ code });
+    const code = generateTeamCode(name || 'TEAM', sequenceNumber);
+    res.json({ code, seq: sequenceNumber });
   } catch (error) {
     console.error('Generate team code error:', error);
     res.status(500).json({ error: 'Failed to generate team code', code: 'INTERNAL_ERROR' });
@@ -486,7 +490,7 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
     const cleanName = sanitize(team_name);
     let cleanCode = sanitize(team_code || '');
 
-    // Auto-generate team code in format SIH_<4_CHARS>_01 if not provided or 'AUTO'
+    // Auto-generate team code in format SIH_<4_CHARS>_<Sr Number> if not provided or 'AUTO'
     if (!cleanCode || cleanCode.toUpperCase() === 'AUTO') {
       let existingCodes = [];
       try {
@@ -495,7 +499,8 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
         const { data } = await supabaseAdmin.from('teams').select('team_code');
         existingCodes = data || [];
       }
-      cleanCode = generateTeamCode(cleanName, existingCodes.map(r => r.team_code));
+      const seq = getNextTeamSequence(existingCodes.map(r => r.team_code).filter(Boolean));
+      cleanCode = generateTeamCode(cleanName, seq);
     }
 
     // Check for duplicate

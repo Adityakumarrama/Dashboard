@@ -7,6 +7,7 @@ import {
   sanitizeFileName,
   isValidUUID,
   generateTeamCode,
+  getNextTeamSequence,
 } from '../utils/helpers.js';
 import { validateUuidParams } from '../middleware/validateUuid.js';
 
@@ -95,14 +96,21 @@ assert(sanitizeFileName('../../etc/passwd.csv') === 'passwd.csv', 'Path traversa
 assert(sanitizeFileName('file\0name.csv') === 'filename.csv', 'Null bytes stripped from filename');
 assert(sanitizeFileName('C:\\Windows\\System32\\cmd.exe.csv') === 'cmd.exe.csv', 'Windows drive path stripped from filename');
 
-// 7. Team Code Generation Format (SIH_<4 chars of team name>_01)
-console.log('\n7. Testing Team Code Format Generation (SIH_<4_CHARS>_01):');
-assert(generateTeamCode('CodeCrafters') === 'SIH_CODE_01', 'First 4 characters of team name capitalized and suffixed with _01');
-assert(generateTeamCode('Cyber Warriors') === 'SIH_CYBE_01', 'Spaces ignored and first 4 characters used');
-assert(generateTeamCode('AI') === 'SIH_AIXX_01', 'Names under 4 characters are padded with X');
-assert(generateTeamCode('CodeCrafters', ['SIH_CODE_01']) === 'SIH_CODE_02', 'Duplicate codes increment sequence counter to _02');
-assert(generateTeamCode('CodeCrafters', ['SIH_CODE_01', 'SIH_CODE_02']) === 'SIH_CODE_03', 'Sequential counter increments to _03');
-assert(generateTeamCode(null) === 'SIH_TEAM_01', 'Null team name falls back to SIH_TEAM_01');
+// 7. Team Code Generation Format (SIH_<4 chars of team name>_<Sr Number>)
+console.log('\n7. Testing Team Code Format Generation (SIH_<4_CHARS>_<Sr_Number>):');
+assert(generateTeamCode('BioByte', 1) === 'SIH_BIOB_01', 'Sr No 1 generates SIH_BIOB_01');
+assert(generateTeamCode('SolveSphere', 2) === 'SIH_SOLV_02', 'Sr No 2 generates SIH_SOLV_02');
+assert(generateTeamCode('Tech Titans 😎', 3) === 'SIH_TECH_03', 'Sr No 3 generates SIH_TECH_03');
+assert(generateTeamCode('VETRIX', 4) === 'SIH_VETR_04', 'Sr No 4 generates SIH_VETR_04');
+assert(generateTeamCode('BuildGuard', 5) === 'SIH_BUIL_05', 'Sr No 5 generates SIH_BUIL_05');
+assert(generateTeamCode('Vortex Troops', 6) === 'SIH_VORT_06', 'Sr No 6 generates SIH_VORT_06');
+assert(generateTeamCode('THE GLADIATORS', 7) === 'SIH_THEG_07', 'Sr No 7 generates SIH_THEG_07');
+assert(generateTeamCode('Alpha coders', 8) === 'SIH_ALPH_08', 'Sr No 8 generates SIH_ALPH_08');
+assert(generateTeamCode('Genz', 9) === 'SIH_GENZ_09', 'Sr No 9 generates SIH_GENZ_09');
+assert(generateTeamCode('THE GLADIATORS', 10) === 'SIH_THEG_10', 'Sr No 10 generates SIH_THEG_10');
+assert(generateTeamCode('AI', 11) === 'SIH_AIXX_11', 'Short names padded and suffixed with Sr No 11');
+assert(getNextTeamSequence(['SIH_BIOB_01', 'SIH_SOLV_02', 'SIH_TECH_03']) === 4, 'Next sequence for 3 teams is 4');
+assert(generateTeamCode('NextTeam', ['SIH_BIOB_01', 'SIH_SOLV_02']) === 'SIH_NEXT_03', 'Array input computes next Sr No automatically');
 
 console.log(`\n============================================================`);
 console.log(`Total: ${passed + failed} | Passed: ${passed} | Failed: ${failed}`);

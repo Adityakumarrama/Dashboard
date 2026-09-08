@@ -148,28 +148,46 @@ export function isValidUUID(str) {
 }
 
 /**
- * Generate a standardized team code in format: SIH_<TEAM_NAME_FIRST_4_CHARS>_01
- * E.g., "CodeCrafters" -> "SIH_CODE_01"
- * If duplicate, increments counter: "SIH_CODE_02", "SIH_CODE_03", etc.
+ * Extract the highest numerical suffix from existing team codes
+ * to continue the serial number sequence seamlessly
  */
-export function generateTeamCode(teamName, existingCodes = []) {
+export function getNextTeamSequence(existingCodes = []) {
+  let maxSeq = 0;
+  const list = Array.isArray(existingCodes) ? existingCodes : Array.from(existingCodes || []);
+  for (const code of list) {
+    if (!code) continue;
+    const match = String(code).trim().match(/(?:_|-)(\d+)$/);
+    if (match) {
+      const num = parseInt(match[1], 10);
+      if (!isNaN(num) && num > maxSeq) {
+        maxSeq = num;
+      }
+    }
+  }
+  return Math.max(maxSeq + 1, list.length + 1);
+}
+
+/**
+ * Generate a standardized team code in format: SIH_<TEAM_NAME_FIRST_4_CHARS>_<SR_NUMBER>
+ * E.g., Team 1 ("BioByte") -> "SIH_BIOB_01"
+ *       Team 2 ("SolveSphere") -> "SIH_SOLV_02"
+ *       Team 10 ("THE GLADIATORS") -> "SIH_THEG_10"
+ */
+export function generateTeamCode(teamName, sequenceOrExisting = 1) {
   if (!teamName || typeof teamName !== 'string') {
-    return 'SIH_TEAM_01';
+    teamName = 'TEAM';
   }
   const clean = teamName.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
   const namePart = (clean.slice(0, 4) || 'TEAM').padEnd(4, 'X');
   const prefix = `SIH_${namePart}_`;
 
-  const existingSet = new Set(
-    (Array.isArray(existingCodes) ? existingCodes : Array.from(existingCodes || []))
-      .map(c => String(c || '').trim().toUpperCase())
-  );
-
-  let counter = 1;
-  let candidate = `${prefix}${String(counter).padStart(2, '0')}`;
-  while (existingSet.has(candidate)) {
-    counter++;
-    candidate = `${prefix}${String(counter).padStart(2, '0')}`;
+  let seq = 1;
+  if (typeof sequenceOrExisting === 'number') {
+    seq = sequenceOrExisting;
+  } else if (Array.isArray(sequenceOrExisting) || sequenceOrExisting instanceof Set) {
+    seq = getNextTeamSequence(sequenceOrExisting);
   }
-  return candidate;
+
+  const numStr = String(seq).padStart(2, '0');
+  return `${prefix}${numStr}`;
 }

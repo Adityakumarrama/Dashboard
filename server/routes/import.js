@@ -6,7 +6,7 @@ import { requireAdmin } from '../middleware/rbac.js';
 import { upload } from '../middleware/upload.js';
 import { query, queryOne, queryAll } from '../config/database.js';
 import { logAction, getClientIp } from '../services/auditService.js';
-import { sanitize, generateTeamCode } from '../utils/helpers.js';
+import { sanitize, generateTeamCode, getNextTeamSequence } from '../utils/helpers.js';
 import { parse } from 'csv-parse/sync';
 import { XMLParser } from 'fast-xml-parser';
 import pdf from 'pdf-parse/lib/pdf-parse.js';
@@ -44,7 +44,7 @@ function isRamaFormat(headers) {
   );
 }
 
-function parseRamaRow(rawCells, headers, index, usedCodes) {
+function parseRamaRow(rawCells, headers, index, usedCodes, baseSequence = 1) {
   const get = (idx) => {
     if (idx < 0 || idx >= rawCells.length) return '';
     let val = sanitize(String(rawCells[idx] || '').trim());
@@ -97,8 +97,9 @@ function parseRamaRow(rawCells, headers, index, usedCodes) {
   const leaderEmail = get(leaderEmailCol >= 0 ? leaderEmailCol : 8);
   const leaderEnroll = get(leaderEnrollCol >= 0 ? leaderEnrollCol : 9);
 
-  // Generate team code in format: SIH_<TEAM NAME 4 chars>_01
-  const uniqueCode = generateTeamCode(teamName, usedCodes);
+  // Generate team code in format: SIH_<TEAM NAME 4 chars>_<Sr Number>
+  const serialNumber = baseSequence + index;
+  const uniqueCode = generateTeamCode(teamName, serialNumber);
   usedCodes.add(uniqueCode.toUpperCase());
 
   // Locate Member 1 to 5 starting columns
@@ -236,6 +237,18 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
     let isRama = false;
     const usedCodes = new Set();
 
+    // Query existing team codes in DB to calculate true starting serial number
+    let existingCodes = [];
+    try {
+      existingCodes = await queryAll('SELECT team_code FROM teams');
+    } catch {
+      const { data } = await supabaseAdmin.from('teams').select('team_code');
+      existingCodes = data || [];
+    }
+    const existingCodeList = (existingCodes || []).map(t => t.team_code).filter(Boolean);
+    const existingCodeSet = new Set(existingCodeList.map(c => c.toLowerCase()));
+    const baseSequence = getNextTeamSequence(existingCodeList);
+
     if (ext === '.csv' || ext === '.tsv' || ext === '.txt') {
       try {
         const text = fileContent.toString('utf-8');
@@ -282,7 +295,7 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
           });
 
           if (isRama) {
-            records = validDataRows.map((row, idx) => parseRamaRow(row, detectedHeaders, idx, usedCodes));
+            records = validDataRows.map((row, idx) => parseRamaRow(row, detectedHeaders, idx, usedCodes, baseSequence));
           } else {
             // Standard CSV mapping: map valid rows using detectedHeaders
             records = validDataRows.map(row => {
@@ -349,7 +362,7 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
       };
     } else {
       fieldMapping = autoMapFields(detectedHeaders);
-      mappedRecords = records.map((record) => {
+      mappedRecords = records.map((record, idx) => {
         const mapped = {};
         for (const [header, dbField] of Object.entries(fieldMapping)) {
           if (dbField && record[header] !== undefined) {
@@ -357,7 +370,7 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
           }
         }
         if (!mapped.team_code && mapped.team_name) {
-          mapped.team_code = generateTeamCode(mapped.team_name, [...existingCodeSet, ...seenCodes]);
+          mapped.team_code = generateTeamCode(mapped.team_name, baseSequence + idx);
         }
         return mapped;
       });
@@ -367,16 +380,6 @@ router.post('/upload', authenticate, requireAdmin, upload.single('file'), async 
     const validationErrors = [];
     const validRecords = [];
     const duplicates = [];
-
-    // Check for existing team codes in DB
-    let existingCodes = [];
-    try {
-      existingCodes = await queryAll('SELECT team_code FROM teams');
-    } catch {
-      const { data } = await supabaseAdmin.from('teams').select('team_code');
-      existingCodes = data || [];
-    }
-    const existingCodeSet = new Set((existingCodes || []).map(t => (t.team_code || '').toLowerCase()));
 
     const seenCodes = new Set();
 
