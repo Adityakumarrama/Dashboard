@@ -269,26 +269,143 @@ router.put('/:id', authenticate, requireAdmin, validateUuidParams('id'), async (
       return res.status(404).json({ error: 'User not found', code: 'NOT_FOUND' });
     }
 
-    const { full_name, role, judge_id, status } = req.body;
+    const { full_name, role, judge_id, status, email, username, password } = req.body;
+
+    // Validate role if provided
+    let normalizedRole = undefined;
+    if (role !== undefined) {
+      normalizedRole = (role || '').toUpperCase();
+      if (!['ADMIN', 'JURY'].includes(normalizedRole)) {
+        return res.status(400).json({ error: 'Invalid role. Must be ADMIN or JURY', code: 'VALIDATION_ERROR' });
+      }
+    }
+
+    // Validate status if provided
+    if (status !== undefined && !['active', 'inactive'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status. Must be active or inactive', code: 'VALIDATION_ERROR' });
+    }
+
+    // Validate password strength if provided
+    if (password) {
+      const pwdValidation = validatePasswordStrength(password);
+      if (!pwdValidation.valid) {
+        return res.status(400).json({ error: pwdValidation.error, code: 'WEAK_PASSWORD' });
+      }
+    }
+
+    // Validate email uniqueness if changed
+    const targetEmail = email ? email.toLowerCase().trim() : undefined;
+    if (targetEmail && targetEmail !== existing.email?.toLowerCase()) {
+      let duplicateEmail = null;
+      try {
+        duplicateEmail = await queryOne('SELECT id FROM users WHERE email = $1 AND id != $2', [targetEmail, req.params.id]);
+      } catch {
+        const { data } = await supabaseAdmin.from('users').select('id').eq('email', targetEmail).neq('id', req.params.id).maybeSingle();
+        duplicateEmail = data;
+      }
+      if (duplicateEmail) {
+        return res.status(409).json({ error: 'Email already in use by another account', code: 'DUPLICATE_EMAIL' });
+      }
+    }
+
+    // Validate judge_id uniqueness if changed
+    const targetJudgeId = judge_id !== undefined ? (judge_id ? judge_id.trim() : null) : undefined;
+    if (targetJudgeId && targetJudgeId !== existing.judge_id) {
+      let duplicateJudge = null;
+      try {
+        duplicateJudge = await queryOne('SELECT id FROM users WHERE judge_id = $1 AND id != $2', [targetJudgeId, req.params.id]);
+      } catch {
+        const { data } = await supabaseAdmin.from('users').select('id').eq('judge_id', targetJudgeId).neq('id', req.params.id).maybeSingle();
+        duplicateJudge = data;
+      }
+      if (duplicateJudge) {
+        return res.status(409).json({ error: 'Jury ID already assigned to another user', code: 'DUPLICATE_JURY_ID' });
+      }
+    }
+
+    // Determine target username: if judge_id updated and username not specified, sync username if it previously matched judge_id
+    let targetUsername = username ? username.trim() : undefined;
+    if (!targetUsername && targetJudgeId && existing.username === existing.judge_id) {
+      targetUsername = targetJudgeId;
+    }
+
+    if (targetUsername && targetUsername !== existing.username) {
+      let duplicateUser = null;
+      try {
+        duplicateUser = await queryOne('SELECT id FROM users WHERE username = $1 AND id != $2', [targetUsername, req.params.id]);
+      } catch {
+        const { data } = await supabaseAdmin.from('users').select('id').eq('username', targetUsername).neq('id', req.params.id).maybeSingle();
+        duplicateUser = data;
+      }
+      if (duplicateUser) {
+        return res.status(409).json({ error: 'Username already in use by another account', code: 'DUPLICATE_USERNAME' });
+      }
+    }
+
+    // Sync with Supabase Auth if auth_id exists
+    if (existing.auth_id) {
+      try {
+        const supabaseUpdates = {};
+        if (targetEmail && targetEmail !== existing.email) {
+          supabaseUpdates.email = targetEmail;
+          supabaseUpdates.email_confirm = true;
+        }
+        if (password) {
+          supabaseUpdates.password = password;
+        }
+
+        const metadataUpdates = {};
+        if (full_name !== undefined) metadataUpdates.full_name = sanitize(full_name.trim());
+        if (targetJudgeId !== undefined) metadataUpdates.judge_id = targetJudgeId;
+        if (normalizedRole !== undefined) metadataUpdates.role = normalizedRole;
+        if (targetUsername !== undefined) metadataUpdates.username = sanitize(targetUsername);
+
+        if (Object.keys(metadataUpdates).length > 0) {
+          supabaseUpdates.user_metadata = metadataUpdates;
+        }
+
+        if (Object.keys(supabaseUpdates).length > 0) {
+          const { error: supaAuthErr } = await supabaseAdmin.auth.admin.updateUserById(existing.auth_id, supabaseUpdates);
+          if (supaAuthErr) {
+            console.warn('Supabase Auth update warning:', supaAuthErr.message);
+          }
+        }
+      } catch (authErr) {
+        console.warn('Failed to update Supabase Auth user:', authErr.message);
+      }
+    }
 
     let user = null;
+    const finalFullName = full_name !== undefined ? sanitize(full_name.trim()) : null;
+    const finalRole = normalizedRole || null;
+    const finalJudgeId = targetJudgeId !== undefined ? targetJudgeId : null;
+    const finalStatus = status || null;
+    const finalEmail = targetEmail || null;
+    const finalUsername = targetUsername ? sanitize(targetUsername) : null;
+
     try {
       user = await queryOne(
         `UPDATE users SET
           full_name = COALESCE($1, full_name),
           role = COALESCE($2, role),
-          judge_id = COALESCE($3, judge_id),
-          status = COALESCE($4, status)
-         WHERE id = $5
+          judge_id = CASE WHEN $3::text IS NOT NULL THEN $3 ELSE judge_id END,
+          status = COALESCE($4, status),
+          email = COALESCE($5, email),
+          username = COALESCE($6, username),
+          updated_at = NOW()
+         WHERE id = $7
          RETURNING id, username, email, full_name, role, judge_id, status, created_at, updated_at`,
-        [full_name, role, judge_id, status, req.params.id]
+        [finalFullName, finalRole, finalJudgeId, finalStatus, finalEmail, finalUsername, req.params.id]
       );
-    } catch {
-      const updateFields = {};
-      if (full_name !== undefined) updateFields.full_name = full_name;
-      if (role !== undefined) updateFields.role = role;
-      if (judge_id !== undefined) updateFields.judge_id = judge_id;
+    } catch (pgErr) {
+      console.warn('PostgreSQL update error, trying Supabase REST client:', pgErr.message);
+      const updateFields = { updated_at: new Date().toISOString() };
+      if (full_name !== undefined) updateFields.full_name = sanitize(full_name.trim());
+      if (normalizedRole !== undefined) updateFields.role = normalizedRole;
+      if (targetJudgeId !== undefined) updateFields.judge_id = targetJudgeId;
       if (status !== undefined) updateFields.status = status;
+      if (targetEmail !== undefined) updateFields.email = targetEmail;
+      if (targetUsername !== undefined) updateFields.username = sanitize(targetUsername);
 
       const { data, error: supaErr } = await supabaseAdmin
         .from('users')
@@ -303,8 +420,10 @@ router.put('/:id', authenticate, requireAdmin, validateUuidParams('id'), async (
 
     try {
       await logAction(req.user.id, 'user.updated', 'user', user.id,
-        { before: { full_name: existing.full_name, role: existing.role, status: existing.status },
-          after: { full_name: user.full_name, role: user.role, status: user.status } },
+        {
+          before: { full_name: existing.full_name, role: existing.role, status: existing.status, judge_id: existing.judge_id, email: existing.email },
+          after: { full_name: user.full_name, role: user.role, status: user.status, judge_id: user.judge_id, email: user.email, password_changed: !!password }
+        },
         getClientIp(req));
     } catch (logErr) {
       console.warn('Audit log error:', logErr.message);

@@ -42,7 +42,7 @@ router.get('/', authenticate, requireAdmin, async (req, res) => {
       );
 
       const jurySummary = await queryAll(
-        `SELECT u.id, u.full_name, u.judge_id, u.email,
+        `SELECT u.id, u.full_name, u.judge_id, u.email, u.status, u.username,
           COUNT(ja.id) as assigned_count,
           COUNT(CASE WHEN e.status = 'submitted' THEN 1 END) as completed_count,
           COUNT(CASE WHEN e.status IS NULL OR e.status != 'submitted' THEN 1 END) as pending_count,
@@ -50,8 +50,8 @@ router.get('/', authenticate, requireAdmin, async (req, res) => {
          FROM users u
          LEFT JOIN jury_assignments ja ON ja.user_id = u.id
          LEFT JOIN evaluations e ON e.team_id = ja.team_id AND e.user_id = u.id
-         WHERE u.role = 'JURY' AND u.status = 'active'
-         GROUP BY u.id, u.full_name, u.judge_id, u.email
+         WHERE u.role = 'JURY'
+         GROUP BY u.id, u.full_name, u.judge_id, u.email, u.status, u.username
          ORDER BY u.full_name`
       );
 
@@ -63,7 +63,7 @@ router.get('/', authenticate, requireAdmin, async (req, res) => {
         jury_id
           ? supabaseAdmin.from('jury_assignments').select('*').eq('user_id', jury_id)
           : supabaseAdmin.from('jury_assignments').select('*'),
-        supabaseAdmin.from('users').select('id, full_name, judge_id, email, role, status').eq('status', 'active'),
+        supabaseAdmin.from('users').select('id, full_name, judge_id, email, role, status, username'),
         supabaseAdmin.from('teams').select('id, team_code, team_name, category, track, organization'),
         supabaseAdmin.from('evaluations').select('id, team_id, user_id, status, total_score, submitted_at'),
       ]);
@@ -108,6 +108,8 @@ router.get('/', authenticate, requireAdmin, async (req, res) => {
           full_name: u.full_name,
           judge_id: u.judge_id,
           email: u.email,
+          status: u.status,
+          username: u.username,
           assigned_count: userAssignments.length,
           completed_count: completed.length,
           pending_count: pending,
